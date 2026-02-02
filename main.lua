@@ -5,7 +5,6 @@
 -- ===== 定数 =====
 local FONT_PATH = "fonts/NotoSansJP-Regular.ttf"
 local MAX_STAT = 100
-local MAX_ENERGY = 100
 local START_MONTH = 4  -- 4月スタート
 
 -- フェーズ・経済定数
@@ -21,16 +20,14 @@ local FORCED_EVENT_CHANCE = 0.50
 local CRITICAL_MULTIPLIER = 1.5
 local CRITICAL_BASE_RATE = 0.10
 local CRITICAL_STAT_BONUS = 0.003
-local ENERGY_RECOVERY = 10
 
 -- ステータス名
 local statNames = {
   content  = "コンテンツ力",
   tech     = "技術力",
   hype     = "話題性",
-  monetize = "課金圧",
 }
-local statOrder = { "content", "tech", "hype", "monetize" }
+local statOrder = { "content", "tech", "hype" }
 
 -- ===== 太字描画ヘルパー =====
 -- 1pxずらして2回描画することでBold風にする
@@ -85,20 +82,27 @@ function turnToDateStr(turn)
   return string.format("%d年目 %d月", y, m)
 end
 
+-- ステータス条件チェック
+function meetsRequirements(card, s)
+  if not card.requires then return true end
+  for stat, minVal in pairs(card.requires) do
+    if (s[stat] or 0) < minVal then return false end
+  end
+  return true
+end
+
 -- ===== 開発期カード =====
 local devCards = {
   {
     name = "キャラデザイン制作",
-    effectDesc = "コンテンツ力 +8~12\n資金 -100万",
+    effectDesc = "コンテンツ力 +8~12",
     rarity = "normal",
-    energyCost = 15,
+    cost = 100,
     critStat = "content",
     apply = function(s, m)
       local g = addStatMult(s, "content", 8, 12, m)
-      s.money = s.money - 100
       return {
         { label = "コンテンツ力", val = g },
-        { label = "資金", val = -100, suffix = "万" },
       }
     end,
   },
@@ -106,7 +110,7 @@ local devCards = {
     name = "シナリオ執筆",
     effectDesc = "コンテンツ力 +10~15",
     rarity = "normal",
-    energyCost = 25,
+    cost = 50,
     critStat = "content",
     apply = function(s, m)
       local g = addStatMult(s, "content", 10, 15, m)
@@ -117,49 +121,44 @@ local devCards = {
   },
   {
     name = "サーバー基盤構築",
-    effectDesc = "技術力 +10~15\n資金 -150万",
+    effectDesc = "技術力 +10~15",
     rarity = "normal",
-    energyCost = 15,
+    cost = 150,
     critStat = "tech",
     apply = function(s, m)
       local g = addStatMult(s, "tech", 10, 15, m)
-      s.money = s.money - 150
       return {
         { label = "技術力", val = g },
-        { label = "資金", val = -150, suffix = "万" },
       }
     end,
   },
   {
     name = "ティザーPV制作",
-    effectDesc = "話題性 +10~15\n資金 -100万",
+    effectDesc = "話題性 +10~15",
     rarity = "normal",
-    energyCost = 10,
+    cost = 100,
     critStat = "hype",
     apply = function(s, m)
       local g = addStatMult(s, "hype", 10, 15, m)
-      s.money = s.money - 100
       return {
         { label = "話題性", val = g },
-        { label = "資金", val = -100, suffix = "万" },
       }
     end,
   },
   {
     name = "事前登録キャンペーン",
-    effectDesc = "話題性 +5~8\n事前登録 +500~1000人\n資金 -50万",
+    effectDesc = "話題性 +5~8\n事前登録 +500~1000人",
     rarity = "normal",
-    energyCost = 10,
+    cost = 50,
+    requires = { hype = 10 },
     critStat = "hype",
     apply = function(s, m)
       local g = addStatMult(s, "hype", 5, 8, m)
       local prereg = math.random(math.floor(500 * m), math.floor(1000 * m))
       s.preregUsers = s.preregUsers + prereg
-      s.money = s.money - 50
       return {
         { label = "話題性", val = g },
         { label = "事前登録", val = prereg, suffix = "人" },
-        { label = "資金", val = -50, suffix = "万" },
       }
     end,
   },
@@ -167,7 +166,8 @@ local devCards = {
     name = "CBT実施",
     effectDesc = "技術力 +5~8\nコンテンツ力 +3~5",
     rarity = "normal",
-    energyCost = 20,
+    cost = 80,
+    requires = { tech = 15 },
     critStat = "tech",
     apply = function(s, m)
       local g1 = addStatMult(s, "tech", 5, 8, m)
@@ -182,7 +182,7 @@ local devCards = {
     name = "公式SNS開設",
     effectDesc = "話題性 +3~5",
     rarity = "normal",
-    energyCost = 5,
+    cost = 20,
     critStat = "hype",
     apply = function(s, m)
       local g = addStatMult(s, "hype", 3, 5, m)
@@ -195,7 +195,7 @@ local devCards = {
     name = "追加融資",
     effectDesc = "資金 +1000万\n借金 +1000万",
     rarity = "rare",
-    energyCost = 0,
+    cost = 0,
     apply = function(s, m)
       s.money = s.money + 1000
       s.debt = s.debt + 1000
@@ -213,12 +213,13 @@ local opsNormalCards = {
     name = "新キャラ実装",
     effectDesc = "コンテンツ力 +5~8\n話題性 +3~5\nガチャ売上あり",
     rarity = "normal",
-    energyCost = 15,
+    cost = 100,
+    requires = { content = 20 },
     critStat = "content",
     apply = function(s, m)
       local g1 = addStatMult(s, "content", 5, 8, m)
       local g2 = addStatMult(s, "hype", 3, 5, m)
-      local rev = math.floor(s.users * s.monetize / 1500)
+      local rev = math.floor(s.users * s.content / 1500)
       s.money = s.money + rev
       return {
         { label = "コンテンツ力", val = g1 },
@@ -229,39 +230,39 @@ local opsNormalCards = {
   },
   {
     name = "ストーリー更新",
-    effectDesc = "コンテンツ力 +10~15\n話題性 +3~5\n課金パック売上あり\n資金 -80万",
+    effectDesc = "コンテンツ力 +10~15\n話題性 +3~5\nパック売上あり",
     rarity = "normal",
-    energyCost = 25,
+    cost = 80,
+    requires = { content = 30 },
     critStat = "content",
     apply = function(s, m)
       local g1 = addStatMult(s, "content", 10, 15, m)
       local g2 = addStatMult(s, "hype", 3, 5, m)
-      local rev = math.floor(s.users * s.monetize / 1500)
-      s.money = s.money + rev - 80
+      local rev = math.floor(s.users * s.content / 1500)
+      s.money = s.money + rev
       return {
         { label = "コンテンツ力", val = g1 },
         { label = "話題性", val = g2 },
         { label = "パック売上", val = rev, suffix = "万" },
-        { label = "資金", val = -50, suffix = "万" },
       }
     end,
   },
   {
     name = "コラボイベント開催",
-    effectDesc = "話題性 +10~18\nユーザー +10%\nコラボガチャ売上あり\n資金 -200万",
+    effectDesc = "話題性 +10~18\nユーザー +10%\nコラボ売上あり",
     rarity = "normal",
-    energyCost = 20,
+    cost = 200,
+    requires = { hype = 30 },
     critStat = "hype",
     apply = function(s, m)
       local g = addStatMult(s, "hype", 10, 18, m)
       local gu = addUsers(s, 0.10 * m)
-      local rev = math.floor(s.users * s.monetize / 1500)
-      s.money = s.money + rev - 200
+      local rev = math.floor(s.users * s.content / 1500)
+      s.money = s.money + rev
       return {
         { label = "話題性", val = g },
         { label = "ユーザー", val = gu, suffix = "人" },
-        { label = "コラボガチャ売上", val = rev, suffix = "万" },
-        { label = "資金", val = -150, suffix = "万" },
+        { label = "コラボ売上", val = rev, suffix = "万" },
       }
     end,
   },
@@ -269,12 +270,13 @@ local opsNormalCards = {
     name = "レイドイベント開催",
     effectDesc = "コンテンツ力 +3~5\n話題性 +5~8\n周回課金あり",
     rarity = "normal",
-    energyCost = 20,
+    cost = 80,
+    requires = { content = 20 },
     critStat = "content",
     apply = function(s, m)
       local g1 = addStatMult(s, "content", 3, 5, m)
       local g2 = addStatMult(s, "hype", 5, 8, m)
-      local rev = math.floor(s.users * s.monetize / 1500)
+      local rev = math.floor(s.users * s.content / 1500)
       s.money = s.money + rev
       return {
         { label = "コンテンツ力", val = g1 },
@@ -287,7 +289,7 @@ local opsNormalCards = {
     name = "復刻イベント開催",
     effectDesc = "話題性 -2\nユーザー +3%（復帰勢）",
     rarity = "normal",
-    energyCost = 5,
+    cost = 20,
     apply = function(s, m)
       s.hype = math.max(0, s.hype - 2)
       local gu = addUsers(s, 0.03 * m)
@@ -301,7 +303,7 @@ local opsNormalCards = {
     name = "バグ修正",
     effectDesc = "技術力 +5~10",
     rarity = "normal",
-    energyCost = 10,
+    cost = 50,
     critStat = "tech",
     apply = function(s, m)
       local g = addStatMult(s, "tech", 5, 10, m)
@@ -312,70 +314,62 @@ local opsNormalCards = {
   },
   {
     name = "サーバー増強",
-    effectDesc = "技術力 +5~8\n資金 -100万",
+    effectDesc = "技術力 +5~8",
     rarity = "normal",
-    energyCost = 10,
+    cost = 100,
+    requires = { tech = 20 },
     critStat = "tech",
     apply = function(s, m)
       local g = addStatMult(s, "tech", 5, 8, m)
-      s.money = s.money - 100
       return {
         { label = "技術力", val = g },
-        { label = "資金", val = -100, suffix = "万" },
       }
     end,
   },
   {
     name = "SNS広報キャンペーン",
-    effectDesc = "話題性 +5~10\n資金 -50万",
+    effectDesc = "話題性 +5~10",
     rarity = "normal",
-    energyCost = 8,
+    cost = 50,
     critStat = "hype",
     apply = function(s, m)
       local g = addStatMult(s, "hype", 5, 10, m)
-      s.money = s.money - 50
       return {
         { label = "話題性", val = g },
-        { label = "資金", val = -50, suffix = "万" },
       }
     end,
   },
   {
-    name = "限定ガチャ投入",
-    effectDesc = "ガチャ売上あり\n課金圧 +8~12\n話題性 -3~5",
+    name = "大規模キャンペーン",
+    effectDesc = "ユーザー +5%\n話題性 +5~8\nキャンペーン売上あり",
     rarity = "normal",
-    energyCost = 10,
-    critStat = "monetize",
+    cost = 150,
+    requires = { hype = 40 },
+    critStat = "hype",
     apply = function(s, m)
-      local rev = math.floor(s.users * s.monetize / 1500)
+      local gu = addUsers(s, 0.05 * m)
+      local g = addStatMult(s, "hype", 5, 8, m)
+      local rev = math.floor(s.users * s.content / 1500)
       s.money = s.money + rev
-      local g = addStatMult(s, "monetize", 8, 12, m)
-      local hd = math.random(3, 5)
-      s.hype = math.max(0, s.hype - hd)
       return {
-        { label = "ガチャ売上", val = rev, suffix = "万" },
-        { label = "課金圧", val = g },
-        { label = "話題性", val = -hd },
+        { label = "ユーザー", val = gu, suffix = "人" },
+        { label = "話題性", val = g },
+        { label = "キャンペーン売上", val = rev, suffix = "万" },
       }
     end,
   },
   {
     name = "石バラマキ",
-    effectDesc = "課金圧 -5~10\nユーザー +8%\n話題性 +3~5\n資金 -50万",
+    effectDesc = "ユーザー +8%\n話題性 +3~5",
     rarity = "normal",
-    energyCost = 5,
+    cost = 50,
     critStat = "hype",
     apply = function(s, m)
-      local dec = math.random(5, 10)
-      s.monetize = math.max(0, s.monetize - dec)
       local gu = addUsers(s, 0.08 * m)
       local g = addStatMult(s, "hype", 3, 5, m)
-      s.money = s.money - 50
       return {
-        { label = "課金圧", val = -dec },
         { label = "ユーザー", val = gu, suffix = "人" },
         { label = "話題性", val = g },
-        { label = "資金", val = -50, suffix = "万" },
       }
     end,
   },
@@ -385,20 +379,19 @@ local opsNormalCards = {
 local opsRareCards = {
   {
     name = "大型アップデート",
-    effectDesc = "コンテンツ力 +15~20\n技術力 +3~5\n話題性 +8~12\n資金 -300万",
+    effectDesc = "コンテンツ力 +15~20\n技術力 +3~5\n話題性 +8~12",
     rarity = "rare",
-    energyCost = 25,
+    cost = 300,
+    requires = { content = 30 },
     critStat = "content",
     apply = function(s, m)
       local g1 = addStatMult(s, "content", 15, 20, m)
       local g2 = addStatMult(s, "tech", 3, 5, m)
       local g3 = addStatMult(s, "hype", 8, 12, m)
-      s.money = s.money - 300
       return {
         { label = "コンテンツ力", val = g1 },
         { label = "技術力", val = g2 },
         { label = "話題性", val = g3 },
-        { label = "資金", val = -300, suffix = "万" },
       }
     end,
   },
@@ -406,7 +399,8 @@ local opsRareCards = {
     name = "有名配信者が紹介",
     effectDesc = "話題性 +15~25\nユーザー +15%",
     rarity = "rare",
-    energyCost = 5,
+    cost = 0,
+    requires = { hype = 30 },
     critStat = "hype",
     apply = function(s, m)
       local g = addStatMult(s, "hype", 15, 25, m)
@@ -421,7 +415,7 @@ local opsRareCards = {
     name = "コラボ先からオファー",
     effectDesc = "話題性 +10~15\nユーザー +10%\n資金 +100万",
     rarity = "rare",
-    energyCost = 5,
+    cost = 0,
     critStat = "hype",
     apply = function(s, m)
       local g = addStatMult(s, "hype", 10, 15, m)
@@ -438,8 +432,9 @@ local opsRareCards = {
     name = "福袋販売",
     effectDesc = "資金 +200万\n話題性 +3~5",
     rarity = "rare",
-    energyCost = 5,
-    critStat = "monetize",
+    cost = 0,
+    requires = { content = 20 },
+    critStat = "content",
     apply = function(s, m)
       s.money = s.money + math.floor(200 * m)
       local g = addStatMult(s, "hype", 3, 5, m)
@@ -471,7 +466,7 @@ local negativeEvents = {
     name = "ガチャ確率誤表記発覚",
     effectDesc = "資金 -300万\nユーザー -8%\n話題性 -10",
     isNegative = true,
-    condition = function(s) return s.monetize > 50 end,
+    condition = function(s) return s.opsTurn > 3 end,
     apply = function(s)
       s.money = s.money - 300
       local lost = loseUsers(s, 0.08)
@@ -523,16 +518,14 @@ local negativeEvents = {
   },
   {
     name = "炎上",
-    effectDesc = "ユーザー -8%\n課金圧 -5\n話題性 +5",
+    effectDesc = "ユーザー -8%\n話題性 +5（悪名）",
     isNegative = true,
-    condition = function(s) return s.monetize > 50 end,
+    condition = function(s) return s.hype > 50 end,
     apply = function(s)
       local lost = loseUsers(s, 0.08)
-      s.monetize = math.max(0, s.monetize - 5)
       s.hype = math.min(MAX_STAT, s.hype + 5)
       return {
         { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "課金圧", val = -5 },
         { label = "話題性(悪名)", val = 5 },
       }
     end,
@@ -662,8 +655,6 @@ local function takeSnapshot()
     content = state.content,
     tech = state.tech,
     hype = state.hype,
-    monetize = state.monetize,
-    energy = state.energy,
     preregUsers = state.preregUsers,
   }
 end
@@ -683,8 +674,6 @@ local function initState()
     content    = 0,
     tech       = 0,
     hype       = 0,
-    monetize   = 0,
-    energy     = MAX_ENERGY,
     preregUsers = 0,
     lastRevenue = 0,
     churnReduction = 0,
@@ -716,8 +705,28 @@ local function drawOneCard(exclude)
     rarePool = opsRareCards
   end
 
-  local useRare = rarePool and math.random(100) <= 15
-  local source = useRare and rarePool or pool
+  -- ステータス条件を満たすカードのみ抽選対象
+  local availPool = {}
+  for _, card in ipairs(pool) do
+    if meetsRequirements(card, state) then
+      table.insert(availPool, card)
+    end
+  end
+  if #availPool == 0 then availPool = pool end -- フォールバック
+
+  local availRare = nil
+  if rarePool then
+    availRare = {}
+    for _, card in ipairs(rarePool) do
+      if meetsRequirements(card, state) then
+        table.insert(availRare, card)
+      end
+    end
+    if #availRare == 0 then availRare = nil end
+  end
+
+  local useRare = availRare and math.random(100) <= 15
+  local source = useRare and availRare or availPool
 
   for _ = 1, 10 do
     local card = source[math.random(#source)]
@@ -727,7 +736,7 @@ local function drawOneCard(exclude)
     end
     if not dup then return card end
   end
-  return pool[1]
+  return availPool[1]
 end
 
 local function drawHand()
@@ -773,14 +782,6 @@ local function processTurnStart()
     state.money = state.money - interest
     table.insert(report, { label = "利子", val = -interest, suffix = "万" })
 
-    -- 体力回復
-    local prev = state.energy
-    state.energy = math.min(MAX_ENERGY, state.energy + ENERGY_RECOVERY)
-    local rec = state.energy - prev
-    if rec > 0 then
-      table.insert(report, { label = "体力回復", val = rec })
-    end
-
     -- 残りターン表示
     local remain = DEV_TURNS - state.turn + 1
     table.insert(report, { label = "リリースまで", val = remain, suffix = "ターン" })
@@ -788,8 +789,8 @@ local function processTurnStart()
   elseif state.phase == "ops" then
     state.opsTurn = state.opsTurn + 1
 
-    -- 売上
-    local revenue = math.floor(state.users * state.monetize / REVENUE_DIVISOR)
+    -- 売上（コンテンツ力ベース）
+    local revenue = math.floor(state.users * state.content / REVENUE_DIVISOR)
     state.money = state.money + revenue
     state.lastRevenue = revenue
     table.insert(report, { label = "売上", val = revenue, suffix = "万" })
@@ -820,7 +821,7 @@ local function processTurnStart()
     state.users = state.users + inflow
 
     -- 離脱
-    local baseChurn = 0.07 + state.monetize / 400 - state.content / 1000
+    local baseChurn = 0.07 - state.content / 1000
     if state.churnReduction > 0 then
       baseChurn = baseChurn - state.churnReductionAmt
       state.churnReduction = state.churnReduction - 1
@@ -851,14 +852,6 @@ local function processTurnStart()
     if contentDecay > 0 then
       table.insert(report, { label = "マンネリ化", val = -contentDecay })
     end
-
-    -- 体力回復
-    local prev = state.energy
-    state.energy = math.min(MAX_ENERGY, state.energy + ENERGY_RECOVERY)
-    local rec = state.energy - prev
-    if rec > 0 then
-      table.insert(report, { label = "体力回復", val = rec })
-    end
   end
 
   turnReport = report
@@ -882,7 +875,6 @@ local function executeRelease()
   state.users = math.max(500, math.floor(baseUsers * bonus))
   state.phase = "ops"
   state.opsTurn = 0
-  if state.monetize < 10 then state.monetize = 10 end
 
   releaseResult = {
     baseUsers = math.floor(baseUsers),
@@ -901,6 +893,10 @@ end
 -- ===== カード実行 =====
 local function executeCard(card)
   takeSnapshot()
+
+  -- 資金コスト徴収
+  state.money = state.money - card.cost
+
   local outcome = {
     cardName = card.name,
     rarity = card.rarity,
@@ -923,28 +919,24 @@ local function executeCard(card)
     outcome.message = "成功！"
   end
 
-  -- 体力消費
-  state.energy = math.max(0, state.energy - card.energyCost)
-  if card.energyCost > 0 then
-    table.insert(outcome.results, { label = "体力", val = -card.energyCost })
+  -- コスト表示
+  if card.cost > 0 then
+    table.insert(outcome.results, { label = "コスト", val = -card.cost, suffix = "万" })
   end
 
   return outcome
 end
 
--- ===== 休養実行 =====
-local function executeRest()
+-- ===== 様子見実行 =====
+local function executeSkip()
   takeSnapshot()
-  local prev = state.energy
-  state.energy = math.min(MAX_ENERGY, state.energy + 30)
-  local gain = state.energy - prev
   return {
-    cardName = "休養",
+    cardName = "様子見",
     rarity = "rest",
     success = true,
     critical = false,
-    results = { { label = "体力", val = gain } },
-    message = "ゆっくり休んだ！",
+    results = {},
+    message = "何もせずターンを終えた。",
   }
 end
 
@@ -1087,11 +1079,11 @@ function love.keypressed(key)
         if selectedCard == 4 then selectedCard = 2 end
       elseif key == "return" or key == "space" then
         if selectedCard == 4 then
-          lastOutcome = executeRest()
+          lastOutcome = executeSkip()
           subState = "outcome"
         else
           local card = hand[selectedCard]
-          if state.energy < card.energyCost and card.energyCost > 0 then
+          if state.money < card.cost then
             return
           end
           lastOutcome = executeCard(card)
@@ -1293,14 +1285,13 @@ function drawSelectScreen()
   love.graphics.setColor(0.25, 0.25, 0.35)
   love.graphics.line(10, 32, w - 10, 32)
 
-  -- 4ステータス + 体力
+  -- 3ステータス
   love.graphics.setFont(tinyFont)
   local sx = 15
   for i, key in ipairs(statOrder) do
-    local x = sx + (i - 1) * 140
+    local x = sx + (i - 1) * 190
     drawStatMini(x, 38, statNames[key], state[key], MAX_STAT)
   end
-  drawBarSimple(575, 36, 90, 14, state.energy, MAX_ENERGY, "体力", {0.3, 0.8, 0.3})
 
   -- 区切り
   love.graphics.setColor(0.25, 0.25, 0.35)
@@ -1353,32 +1344,32 @@ function drawSelectScreen()
   for i, card in ipairs(hand) do
     local cx = startX + (i - 1) * (cardW + gap)
     local isSelected = (i == selectedCard)
-    local canUse = card.energyCost == 0 or state.energy >= card.energyCost
+    local canUse = state.money >= card.cost
     drawCard(cx, cardY, cardW, cardH, card, isSelected, canUse)
   end
 
-  -- 休養ボタン
-  local restY = cardY + cardH + 8
-  local restW = totalW
-  local restH = 36
-  local restX = startX
-  local restSelected = (selectedCard == 4)
+  -- 様子見ボタン
+  local skipY = cardY + cardH + 8
+  local skipW = totalW
+  local skipH = 36
+  local skipX = startX
+  local skipSelected = (selectedCard == 4)
 
-  love.graphics.setColor(restSelected and {0.18, 0.25, 0.18} or {0.12, 0.15, 0.12})
-  love.graphics.rectangle("fill", restX, restY, restW, restH, 6, 6)
+  love.graphics.setColor(skipSelected and {0.18, 0.20, 0.25} or {0.12, 0.13, 0.18})
+  love.graphics.rectangle("fill", skipX, skipY, skipW, skipH, 6, 6)
 
-  love.graphics.setLineWidth(restSelected and 3 or 1)
-  love.graphics.setColor(restSelected and {0.4, 1, 0.4} or {0.3, 0.5, 0.3})
-  love.graphics.rectangle("line", restX, restY, restW, restH, 6, 6)
+  love.graphics.setLineWidth(skipSelected and 3 or 1)
+  love.graphics.setColor(skipSelected and {0.6, 0.8, 1} or {0.3, 0.4, 0.5})
+  love.graphics.rectangle("line", skipX, skipY, skipW, skipH, 6, 6)
 
   love.graphics.setFont(smallFont)
-  love.graphics.setColor(restSelected and {0.4, 1, 0.4} or {0.5, 0.7, 0.5})
-  boldPrintf("↓ 休養（体力 +30）", restX, restY + 8, restW, "center")
+  love.graphics.setColor(skipSelected and {0.6, 0.8, 1} or {0.4, 0.5, 0.6})
+  boldPrintf("↓ 様子見（何もせずターン終了）", skipX, skipY + 8, skipW, "center")
 
   -- 操作説明
   love.graphics.setFont(tinyFont)
   love.graphics.setColor(0.4, 0.4, 0.5)
-  boldPrintf("←→: カード選択  ↓: 休養  Enter: 決定  Esc: タイトル", 0, 580, w, "center")
+  boldPrintf("←→: カード選択  ↓: 様子見  Enter: 決定  Esc: タイトル", 0, 580, w, "center")
 end
 
 -- ===== 描画: カード1枚 =====
@@ -1434,26 +1425,45 @@ function drawCard(x, y, w, h, card, isSelected, canUse)
   love.graphics.setColor(not canUse and {0.4, 0.4, 0.4} or {0.7, 0.9, 1})
   boldPrintf(card.effectDesc, x + 10, y + 62, w - 20, "center")
 
+  -- 必要ステータス表示
+  if card.requires then
+    local reqY = y + h - 72
+    love.graphics.setFont(tinyFont)
+    for stat, minVal in pairs(card.requires) do
+      local met = (state[stat] or 0) >= minVal
+      love.graphics.setColor(met and {0.4, 0.8, 0.4} or {1, 0.4, 0.4})
+      boldPrintf(
+        string.format("必要: %s %d", statNames[stat] or stat, minVal),
+        x, reqY, w, "center"
+      )
+      reqY = reqY + 14
+    end
+  end
+
   -- 大成功率
   if card.critStat then
     local critRate = math.floor(calculateCriticalRate(card) * 100)
     love.graphics.setFont(tinyFont)
     love.graphics.setColor(1, 0.85, 0.3)
-    boldPrintf(string.format("大成功率 %d%%", critRate), x, y + h - 55, w, "center")
+    boldPrintf(string.format("大成功率 %d%%", critRate), x, y + h - 42, w, "center")
   end
 
-  -- 体力不足
+  -- 資金不足
   if not canUse then
     love.graphics.setFont(tinyFont)
     love.graphics.setColor(1, 0.3, 0.3)
-    boldPrintf("体力不足！", x, y + h - 38, w, "center")
+    boldPrintf("資金不足！", x, y + h - 26, w, "center")
   end
 
-  -- 体力コスト
-  if card.energyCost > 0 then
+  -- 資金コスト
+  if card.cost > 0 then
     love.graphics.setFont(tinyFont)
-    love.graphics.setColor(0.6, 0.6, 0.6)
-    boldPrintf(string.format("体力 -%d", card.energyCost), x, y + h - 22, w, "center")
+    love.graphics.setColor(canUse and {1, 0.9, 0.3} or {0.4, 0.4, 0.4})
+    boldPrintf(string.format("費用 %d万", card.cost), x, y + h - 14, w, "center")
+  else
+    love.graphics.setFont(tinyFont)
+    love.graphics.setColor(0.4, 0.8, 0.4)
+    boldPrintf("無料", x, y + h - 14, w, "center")
   end
 end
 
@@ -1476,7 +1486,7 @@ function drawOutcomeScreen()
   if lastOutcome.rarity == "rare" then
     love.graphics.setColor(1, 0.9, 0.4)
   elseif lastOutcome.rarity == "rest" then
-    love.graphics.setColor(0.4, 0.9, 0.4)
+    love.graphics.setColor(0.5, 0.6, 0.8)
   else
     love.graphics.setColor(0.8, 0.8, 1)
   end
@@ -1660,8 +1670,8 @@ function drawWinScreen()
     0, sy + 90, w, "center"
   )
   boldPrintf(
-    string.format("コンテンツ力: %d  技術力: %d  話題性: %d  課金圧: %d",
-      state.content, state.tech, state.hype, state.monetize),
+    string.format("コンテンツ力: %d  技術力: %d  話題性: %d",
+      state.content, state.tech, state.hype),
     0, sy + 120, w, "center"
   )
 
@@ -1723,8 +1733,8 @@ function drawGameOverScreen()
   )
   sy = sy + 25
   boldPrintf(
-    string.format("コンテンツ力: %d  技術力: %d  話題性: %d  課金圧: %d",
-      state.content, state.tech, state.hype, state.monetize),
+    string.format("コンテンツ力: %d  技術力: %d  話題性: %d",
+      state.content, state.tech, state.hype),
     0, sy, w, "center"
   )
 
@@ -1794,8 +1804,6 @@ function drawBeforeAfter(boxX, startY, boxW)
   table.insert(items, { label = "コンテンツ力", before = snap.content, after = state.content, suffix = "" })
   table.insert(items, { label = "技術力", before = snap.tech, after = state.tech, suffix = "" })
   table.insert(items, { label = "話題性", before = snap.hype, after = state.hype, suffix = "" })
-  table.insert(items, { label = "課金圧", before = snap.monetize, after = state.monetize, suffix = "" })
-  table.insert(items, { label = "体力", before = snap.energy, after = state.energy, suffix = "" })
 
   -- 変化があった項目のみ表示
   local changed = {}
