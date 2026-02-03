@@ -130,6 +130,8 @@ function initState()
     mode = "main",  -- main, skill_select, item_select
     selectedSkill = nil,
     selectedTask = nil,
+    hoveredSkill = nil,  -- マウスオーバー中のスキル
+    hoveredTask = nil,   -- マウスオーバー中のタスク
 
     -- ゲームオーバー
     gameOver = false,
@@ -474,6 +476,48 @@ function love.load()
 end
 
 function love.update(dt)
+  if state.gameOver then return end
+
+  -- マウス位置を取得
+  local mx, my = love.mouse.getPosition()
+
+  -- ホバー状態をリセット
+  state.hoveredSkill = nil
+  state.hoveredTask = nil
+
+  -- タスクのマウスオーバー判定（右側: x=650, y=60から22pxずつ）
+  local taskX = 650
+  local taskY = 60
+  for i, taskEntry in ipairs(state.tasks) do
+    if taskY > 550 then break end
+
+    -- タスクの矩形範囲: x=650, y=taskY, width=500, height=22
+    if mx >= taskX and mx <= taskX + 500 and my >= taskY and my <= taskY + 22 then
+      state.hoveredTask = i
+      break
+    end
+
+    taskY = taskY + 22
+  end
+
+  -- スキルのマウスオーバー判定（下部: x=30, y=575から20pxずつ）
+  local skillY = 575
+  local skillIndex = 0
+  for skillId, _ in pairs(state.unlockedSkills) do
+    local skill = findSkill(skillId)
+    if skill then
+      skillIndex = skillIndex + 1
+
+      -- スキルの矩形範囲: x=30, y=skillY, width=400, height=20
+      if mx >= 30 and mx <= 430 and my >= skillY and my <= skillY + 20 then
+        state.hoveredSkill = skillId
+        break
+      end
+
+      skillY = skillY + 20
+      if skillY > 620 then break end
+    end
+  end
 end
 
 function love.draw()
@@ -630,6 +674,152 @@ function love.draw()
   for i = logStart, #state.logs do
     love.graphics.print(state.logs[i], 20, logY)
     logY = logY + 18
+  end
+
+  -- ツールチップ表示
+  local mx, my = love.mouse.getPosition()
+
+  -- スキルツールチップ
+  if state.hoveredSkill then
+    local skill = findSkill(state.hoveredSkill)
+    if skill then
+      -- ツールチップ背景
+      local tooltipX = mx + 15
+      local tooltipY = my + 15
+      local tooltipW = 350
+      local tooltipH = 120
+
+      -- 画面外に出ないように調整
+      if tooltipX + tooltipW > 1200 then
+        tooltipX = mx - tooltipW - 15
+      end
+      if tooltipY + tooltipH > 800 then
+        tooltipY = my - tooltipH - 15
+      end
+
+      love.graphics.setColor(0, 0, 0, 0.9)
+      love.graphics.rectangle("fill", tooltipX, tooltipY, tooltipW, tooltipH)
+      love.graphics.setColor(1, 1, 1)
+      love.graphics.rectangle("line", tooltipX, tooltipY, tooltipW, tooltipH)
+
+      -- スキル詳細
+      love.graphics.setFont(smallFont)
+      love.graphics.setColor(1, 1, 1)
+      local ty = tooltipY + 10
+      love.graphics.print(string.format("【%s】", skill.name), tooltipX + 10, ty)
+      ty = ty + 20
+
+      love.graphics.print(string.format("コスト: %d万円", skill.cost), tooltipX + 10, ty)
+      ty = ty + 18
+
+      -- 効果
+      local effects = {}
+      if skill.effect_tech then table.insert(effects, string.format("技術力+%d", skill.effect_tech)) end
+      if skill.effect_fame then table.insert(effects, string.format("知名度+%d", skill.effect_fame)) end
+      if skill.effect_content then table.insert(effects, string.format("コンテンツ力+%d", skill.effect_content)) end
+      love.graphics.print("効果: " .. table.concat(effects, ", "), tooltipX + 10, ty)
+      ty = ty + 18
+
+      -- 解決可能タスク
+      if #skill.solves > 0 then
+        local taskNames = {}
+        for _, taskId in ipairs(skill.solves) do
+          -- タスク名を探す
+          for _, task in ipairs(NEGATIVE_TASKS) do
+            if task.id == taskId then
+              table.insert(taskNames, task.name)
+              break
+            end
+          end
+          for _, task in ipairs(POSITIVE_TASKS) do
+            if task.id == taskId then
+              table.insert(taskNames, task.name)
+              break
+            end
+          end
+        end
+        love.graphics.print("解決可能: " .. table.concat(taskNames, ", "), tooltipX + 10, ty)
+      else
+        love.graphics.print("解決可能: なし（ステータス上昇のみ）", tooltipX + 10, ty)
+      end
+      ty = ty + 18
+
+      love.graphics.print(string.format("習得条件: %s %d以上",
+        skill.category == "tech" and "技術力" or
+        skill.category == "fame" and "知名度" or
+        skill.category == "content" and "コンテンツ力" or "知名度",
+        skill.unlock_level), tooltipX + 10, ty)
+    end
+  end
+
+  -- タスクツールチップ
+  if state.hoveredTask then
+    local taskEntry = state.tasks[state.hoveredTask]
+    if taskEntry then
+      local task = taskEntry.task
+
+      -- ツールチップ背景
+      local tooltipX = mx + 15
+      local tooltipY = my + 15
+      local tooltipW = 400
+      local tooltipH = 100
+
+      -- 画面外に出ないように調整
+      if tooltipX + tooltipW > 1200 then
+        tooltipX = mx - tooltipW - 15
+      end
+      if tooltipY + tooltipH > 800 then
+        tooltipY = my - tooltipH - 15
+      end
+
+      love.graphics.setColor(0, 0, 0, 0.9)
+      love.graphics.rectangle("fill", tooltipX, tooltipY, tooltipW, tooltipH)
+      love.graphics.setColor(1, 1, 1)
+      love.graphics.rectangle("line", tooltipX, tooltipY, tooltipW, tooltipH)
+
+      -- タスク詳細
+      love.graphics.setFont(smallFont)
+      love.graphics.setColor(1, 1, 1)
+      local ty = tooltipY + 10
+      love.graphics.print(string.format("【%s】", task.name), tooltipX + 10, ty)
+      ty = ty + 20
+
+      if taskEntry.type == "negative" then
+        -- ネガティブタスク
+        love.graphics.setColor(1, 0.5, 0.5)
+        love.graphics.print(string.format("悪化度: %d (倍率: ×%d)", taskEntry.deterioration, math.min(taskEntry.deterioration + 1, 4)), tooltipX + 10, ty)
+        ty = ty + 18
+
+        love.graphics.setColor(1, 1, 1)
+        local penalties = {}
+        if task.penalty_tech then table.insert(penalties, string.format("技術力%d", task.penalty_tech)) end
+        if task.penalty_fame then table.insert(penalties, string.format("知名度%d", task.penalty_fame)) end
+        if task.penalty_content then table.insert(penalties, string.format("コンテンツ力%d", task.penalty_content)) end
+        if task.penalty_users then table.insert(penalties, string.format("ユーザー%d", task.penalty_users)) end
+        if task.penalty_money then table.insert(penalties, string.format("資金%d万", task.penalty_money)) end
+        love.graphics.print("月末ペナルティ: " .. table.concat(penalties, ", "), tooltipX + 10, ty)
+        ty = ty + 18
+
+        if task.trigger_task then
+          love.graphics.setColor(1, 1, 0.5)
+          love.graphics.print(string.format("放置で%d%%の確率で別タスク誘発", task.trigger_prob * 100), tooltipX + 10, ty)
+        end
+      else
+        -- ポジティブタスク
+        love.graphics.setColor(0.5, 1, 0.5)
+        love.graphics.print("報酬タスク（月末に消滅）", tooltipX + 10, ty)
+        ty = ty + 18
+
+        love.graphics.setColor(1, 1, 1)
+        local rewards = {}
+        if task.reward_tech then table.insert(rewards, string.format("技術力+%d", task.reward_tech)) end
+        if task.reward_fame then table.insert(rewards, string.format("知名度+%d", task.reward_fame)) end
+        if task.reward_content then table.insert(rewards, string.format("コンテンツ力+%d", task.reward_content)) end
+        if task.reward_users then table.insert(rewards, string.format("ユーザー+%d", task.reward_users)) end
+        if task.reward_money then table.insert(rewards, string.format("資金+%d万", task.reward_money)) end
+        love.graphics.print("報酬: " .. table.concat(rewards, ", "), tooltipX + 10, ty)
+      end
+    end
   end
 end
 
