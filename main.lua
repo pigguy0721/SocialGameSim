@@ -4,33 +4,30 @@
 
 -- ===== 定数 =====
 local FONT_PATH = "fonts/NotoSansJP-Regular.ttf"
-local MAX_STAT = 100
-local MAX_ENERGY = 100
 local START_MONTH = 4  -- 4月スタート
 
 -- フェーズ・経済定数
-local DEV_TURNS = 24
-local INITIAL_DEBT = 5000
+local DEV_MONTHS = 24         -- 開発フェーズ: 2年（24ヶ月）
+local OPS_MONTHS = 36         -- 運営フェーズ: 3年（36ヶ月）
+local TOTAL_MONTHS = 60       -- 合計5年
+local INITIAL_DEBT = 2000     -- 初期借金: 2000万円
+local DEBT_DEADLINE = 36      -- 借金返済期限: 36ヶ月（運営1年目終了時）
 local INTEREST_RATE = 0.03
-local REVENUE_DIVISOR = 700
-local MAINT_USER_DIVISOR = 100
-local MAINT_BASE = 40
-local MAINT_TURN_COEFF = 5
 local AUTO_REPAY_RATIO = 0.30
-local FORCED_EVENT_CHANCE = 0.50
-local CRITICAL_MULTIPLIER = 1.5
-local CRITICAL_BASE_RATE = 0.10
-local CRITICAL_STAT_BONUS = 0.003
-local ENERGY_RECOVERY = 10
+local ACTIONS_PER_MONTH = 4   -- 月あたりの行動回数
 
--- ステータス名
-local statNames = {
-  content  = "コンテンツ力",
-  tech     = "技術力",
-  hype     = "話題性",
-  monetize = "課金圧",
+-- リソース初期値
+local INITIAL_N = 10
+local INITIAL_C = 10
+local INITIAL_T = 10
+
+-- リソース名
+local resourceNames = {
+  N = "知名度",
+  C = "コンテンツ",
+  T = "技術力",
 }
-local statOrder = { "content", "tech", "hype", "monetize" }
+local resourceOrder = { "N", "C", "T" }
 
 -- ===== 太字描画ヘルパー =====
 -- 1pxずらして2回描画することでBold風にする
@@ -674,35 +671,113 @@ local titleFont, menuFont, smallFont, tinyFont
 -- ===== 初期化 =====
 local function initState()
   state = {
-    phase      = "dev",
-    turn       = 1,
-    opsTurn    = 0,
-    users      = 0,
-    money      = INITIAL_DEBT,
-    debt       = INITIAL_DEBT,
-    content    = 0,
-    tech       = 0,
-    hype       = 0,
-    monetize   = 0,
-    energy     = MAX_ENERGY,
-    preregUsers = 0,
-    lastRevenue = 0,
-    churnReduction = 0,
-    churnReductionAmt = 0,
+    -- フェーズ管理
+    phase = "dev",           -- "dev" | "ops"
+    month = 1,               -- 1-60（全体の月数）
+    yearOfPhase = 1,         -- フェーズ内の年数（1-2 or 1-3）
+    monthOfYear = 1,         -- 年内の月数（1-12）
+
+    -- リソース（N/C/T）
+    N = INITIAL_N,
+    C = INITIAL_C,
+    T = INITIAL_T,
+    maxN = INITIAL_N,
+    maxC = INITIAL_C,
+    maxT = INITIAL_T,
+
+    -- 経済
+    money = INITIAL_DEBT,
+    debt = INITIAL_DEBT,
+
+    -- 運営指標（運営フェーズのみ）
+    players = 0,
+    cellRank = 0,           -- セルラン順位（1-100, 0=圏外）
+    storeRating = 3.0,      -- ストア評価（1.0-5.0）
+    monthlySales = 0,
+
+    -- 月進行管理
+    currentMonthEvents = {},
+    actionsRemaining = ACTIONS_PER_MONTH,
+
+    -- アイテム（後回し）
+    items = {},
   }
+
   selectedCard = 1
-  subState = "select"
+  selectedEventIndex = 0    -- 0=通常行動選択中
+  subState = "month_start_display"
   hand = {}
   lastOutcome = {}
-  turnReport = {}
+  monthEndReport = {}
   releaseResult = nil
 end
 
--- ===== 大成功率計算 =====
-local function calculateCriticalRate(card)
-  if not card.critStat then return 0 end
-  local statVal = state[card.critStat] or 0
-  return math.min(0.30, CRITICAL_BASE_RATE + statVal * CRITICAL_STAT_BONUS)
+-- ===== 月進行ロジック =====
+
+-- 月初処理
+local function processMonthStart()
+  -- 1. N/C/T全回復
+  state.N = state.maxN
+  state.C = state.maxC
+  state.T = state.maxT
+
+  -- 2. イベント4件生成（後で実装）
+  state.currentMonthEvents = {}  -- TODO: generateMonthlyEvents()
+
+  -- 3. 行動回数リセット
+  state.actionsRemaining = ACTIONS_PER_MONTH
+
+  -- 4. 画面遷移
+  subState = "month_start_display"
+end
+
+-- 月末処理
+local function processMonthEnd()
+  local report = {}
+
+  -- 1. 未対応リスクイベントの処理（後で実装）
+
+  -- 2. 収支計算（運営フェーズのみ）
+  if state.phase == "ops" then
+    -- TODO: 収支計算実装
+  end
+
+  -- 3. フェーズ移行チェック
+  if state.month == DEV_MONTHS then
+    -- 開発→運営移行
+    subState = "release"
+    return report
+  elseif state.month == DEBT_DEADLINE then
+    -- 運営1年目終了→借金判定
+    if state.debt > 0 then
+      gameState = "gameover"
+      return report
+    end
+  elseif state.month == TOTAL_MONTHS then
+    -- 運営3年目終了→最終評価
+    subState = "final_evaluation"
+    return report
+  end
+
+  -- 4. 次月へ進行
+  state.month = state.month + 1
+  updateMonthInfo()
+  processMonthStart()
+
+  monthEndReport = report
+  return report
+end
+
+-- 月情報の更新
+local function updateMonthInfo()
+  if state.month <= DEV_MONTHS then
+    state.phase = "dev"
+    state.yearOfPhase = math.floor((state.month - 1) / 12) + 1
+  else
+    state.phase = "ops"
+    state.yearOfPhase = math.floor((state.month - DEV_MONTHS - 1) / 12) + 1
+  end
+  state.monthOfYear = ((state.month - 1) % 12) + 1
 end
 
 -- ===== カード抽選 =====
