@@ -82,557 +82,113 @@ function turnToDateStr(turn)
   return string.format("%d年目 %d月", y, m)
 end
 
--- ===== 開発期カード =====
-local devCards = {
+-- ===== イベント定義 =====
+local allEvents = {
   {
-    name = "キャラデザイン制作",
-    effectDesc = "コンテンツ力 +8~12\n資金 -100万",
-    rarity = "normal",
-    energyCost = 15,
-    critStat = "content",
-    apply = function(s, m)
-      local g = addStatMult(s, "content", 8, 12, m)
-      s.money = s.money - 100
+    id = "dev_event_001",
+    name = "予期せぬバグ",
+    type = "risk",
+    category = "T",
+    phase = "dev",
+    condition = function(s) return s.phase == "dev" end,
+    onHandle = {
+      cost = { N = 0, C = 0, T = 5 },
+      apply = function(s)
+        s.maxT = s.maxT + 1
+        s.money = s.money - 50
+        return {
+          { label = "T成長", val = 1 },
+          { label = "資金", val = -50, suffix = "万" },
+        }
+      end,
+    },
+    onIgnore = {
+      apply = function(s)
+        s.money = s.money - 100
+        return { { label = "資金", val = -100, suffix = "万" } }
+      end,
+    },
+    description = "バグを発見",
+    handled = false,
+  },
+}
+
+-- ===== 通常行動定義 =====
+local devActions = {
+  {
+    id = "dev_action_001",
+    name = "プロトタイプ制作",
+    phase = "dev",
+    category = "C",
+    cost = { N = 0, C = 8, T = 3 },
+    apply = function(s)
+      s.maxC = s.maxC + 2
+      s.maxT = s.maxT + 1
+      s.money = s.money - 50
       return {
-        { label = "コンテンツ力", val = g },
-        { label = "資金", val = -100, suffix = "万" },
+        { label = "C成長", val = 2 },
+        { label = "T成長", val = 1 },
+        { label = "資金", val = -50, suffix = "万" },
       }
     end,
+    description = "基本システムを作成",
   },
   {
-    name = "シナリオ執筆",
-    effectDesc = "コンテンツ力 +10~15",
-    rarity = "normal",
-    energyCost = 25,
-    critStat = "content",
-    apply = function(s, m)
-      local g = addStatMult(s, "content", 10, 15, m)
+    id = "dev_action_002",
+    name = "宣伝活動",
+    phase = "dev",
+    category = "N",
+    cost = { N = 5, C = 0, T = 0 },
+    apply = function(s)
+      s.maxN = s.maxN + 2
+      s.money = s.money - 30
       return {
-        { label = "コンテンツ力", val = g },
+        { label = "N成長", val = 2 },
+        { label = "資金", val = -30, suffix = "万" },
       }
     end,
+    description = "知名度を上げる",
+  },
+}
+
+local opsActions = {
+  {
+    id = "ops_action_001",
+    name = "アップデート",
+    phase = "ops",
+    category = "C",
+    cost = { N = 0, C = 10, T = 5 },
+    apply = function(s)
+      s.maxC = s.maxC + 3
+      s.money = s.money - 200
+      local gain = math.floor(s.players * 0.05)
+      s.players = s.players + gain
+      return {
+        { label = "C成長", val = 3 },
+        { label = "プレイヤー", val = gain, suffix = "人" },
+        { label = "資金", val = -200, suffix = "万" },
+      }
+    end,
+    description = "新コンテンツ投入",
   },
   {
-    name = "サーバー基盤構築",
-    effectDesc = "技術力 +10~15\n資金 -150万",
-    rarity = "normal",
-    energyCost = 15,
-    critStat = "tech",
-    apply = function(s, m)
-      local g = addStatMult(s, "tech", 10, 15, m)
+    id = "ops_action_002",
+    name = "広告",
+    phase = "ops",
+    category = "N",
+    cost = { N = 8, C = 0, T = 0 },
+    apply = function(s)
+      s.maxN = s.maxN + 2
       s.money = s.money - 150
+      local gain = math.floor(s.maxN * 50)
+      s.players = s.players + gain
       return {
-        { label = "技術力", val = g },
+        { label = "N成長", val = 2 },
+        { label = "プレイヤー", val = gain, suffix = "人" },
         { label = "資金", val = -150, suffix = "万" },
       }
     end,
-  },
-  {
-    name = "ティザーPV制作",
-    effectDesc = "話題性 +10~15\n資金 -100万",
-    rarity = "normal",
-    energyCost = 10,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 10, 15, m)
-      s.money = s.money - 100
-      return {
-        { label = "話題性", val = g },
-        { label = "資金", val = -100, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "事前登録キャンペーン",
-    effectDesc = "話題性 +5~8\n事前登録 +500~1000人\n資金 -50万",
-    rarity = "normal",
-    energyCost = 10,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 5, 8, m)
-      local prereg = math.random(math.floor(500 * m), math.floor(1000 * m))
-      s.preregUsers = s.preregUsers + prereg
-      s.money = s.money - 50
-      return {
-        { label = "話題性", val = g },
-        { label = "事前登録", val = prereg, suffix = "人" },
-        { label = "資金", val = -50, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "CBT実施",
-    effectDesc = "技術力 +5~8\nコンテンツ力 +3~5",
-    rarity = "normal",
-    energyCost = 20,
-    critStat = "tech",
-    apply = function(s, m)
-      local g1 = addStatMult(s, "tech", 5, 8, m)
-      local g2 = addStatMult(s, "content", 3, 5, m)
-      return {
-        { label = "技術力", val = g1 },
-        { label = "コンテンツ力", val = g2 },
-      }
-    end,
-  },
-  {
-    name = "公式SNS開設",
-    effectDesc = "話題性 +3~5",
-    rarity = "normal",
-    energyCost = 5,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 3, 5, m)
-      return {
-        { label = "話題性", val = g },
-      }
-    end,
-  },
-  {
-    name = "追加融資",
-    effectDesc = "資金 +1000万\n借金 +1000万",
-    rarity = "rare",
-    energyCost = 0,
-    apply = function(s, m)
-      s.money = s.money + 1000
-      s.debt = s.debt + 1000
-      return {
-        { label = "資金", val = 1000, suffix = "万" },
-        { label = "借金", val = 1000, suffix = "万" },
-      }
-    end,
-  },
-}
-
--- ===== 運営期通常カード =====
-local opsNormalCards = {
-  {
-    name = "新キャラ実装",
-    effectDesc = "コンテンツ力 +5~8\n話題性 +3~5\nガチャ売上あり",
-    rarity = "normal",
-    energyCost = 15,
-    critStat = "content",
-    apply = function(s, m)
-      local g1 = addStatMult(s, "content", 5, 8, m)
-      local g2 = addStatMult(s, "hype", 3, 5, m)
-      local rev = math.floor(s.users * s.monetize / 1500)
-      s.money = s.money + rev
-      return {
-        { label = "コンテンツ力", val = g1 },
-        { label = "話題性", val = g2 },
-        { label = "ガチャ売上", val = rev, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "ストーリー更新",
-    effectDesc = "コンテンツ力 +10~15\n話題性 +3~5\n課金パック売上あり\n資金 -80万",
-    rarity = "normal",
-    energyCost = 25,
-    critStat = "content",
-    apply = function(s, m)
-      local g1 = addStatMult(s, "content", 10, 15, m)
-      local g2 = addStatMult(s, "hype", 3, 5, m)
-      local rev = math.floor(s.users * s.monetize / 1500)
-      s.money = s.money + rev - 80
-      return {
-        { label = "コンテンツ力", val = g1 },
-        { label = "話題性", val = g2 },
-        { label = "パック売上", val = rev, suffix = "万" },
-        { label = "資金", val = -50, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "コラボイベント開催",
-    effectDesc = "話題性 +10~18\nユーザー +10%\nコラボガチャ売上あり\n資金 -200万",
-    rarity = "normal",
-    energyCost = 20,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 10, 18, m)
-      local gu = addUsers(s, 0.10 * m)
-      local rev = math.floor(s.users * s.monetize / 1500)
-      s.money = s.money + rev - 200
-      return {
-        { label = "話題性", val = g },
-        { label = "ユーザー", val = gu, suffix = "人" },
-        { label = "コラボガチャ売上", val = rev, suffix = "万" },
-        { label = "資金", val = -150, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "レイドイベント開催",
-    effectDesc = "コンテンツ力 +3~5\n話題性 +5~8\n周回課金あり",
-    rarity = "normal",
-    energyCost = 20,
-    critStat = "content",
-    apply = function(s, m)
-      local g1 = addStatMult(s, "content", 3, 5, m)
-      local g2 = addStatMult(s, "hype", 5, 8, m)
-      local rev = math.floor(s.users * s.monetize / 1500)
-      s.money = s.money + rev
-      return {
-        { label = "コンテンツ力", val = g1 },
-        { label = "話題性", val = g2 },
-        { label = "周回課金", val = rev, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "復刻イベント開催",
-    effectDesc = "話題性 -2\nユーザー +3%（復帰勢）",
-    rarity = "normal",
-    energyCost = 5,
-    apply = function(s, m)
-      s.hype = math.max(0, s.hype - 2)
-      local gu = addUsers(s, 0.03 * m)
-      return {
-        { label = "話題性", val = -2 },
-        { label = "復帰ユーザー", val = gu, suffix = "人" },
-      }
-    end,
-  },
-  {
-    name = "バグ修正",
-    effectDesc = "技術力 +5~10",
-    rarity = "normal",
-    energyCost = 10,
-    critStat = "tech",
-    apply = function(s, m)
-      local g = addStatMult(s, "tech", 5, 10, m)
-      return {
-        { label = "技術力", val = g },
-      }
-    end,
-  },
-  {
-    name = "サーバー増強",
-    effectDesc = "技術力 +5~8\n資金 -100万",
-    rarity = "normal",
-    energyCost = 10,
-    critStat = "tech",
-    apply = function(s, m)
-      local g = addStatMult(s, "tech", 5, 8, m)
-      s.money = s.money - 100
-      return {
-        { label = "技術力", val = g },
-        { label = "資金", val = -100, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "SNS広報キャンペーン",
-    effectDesc = "話題性 +5~10\n資金 -50万",
-    rarity = "normal",
-    energyCost = 8,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 5, 10, m)
-      s.money = s.money - 50
-      return {
-        { label = "話題性", val = g },
-        { label = "資金", val = -50, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "限定ガチャ投入",
-    effectDesc = "ガチャ売上あり\n課金圧 +8~12\n話題性 -3~5",
-    rarity = "normal",
-    energyCost = 10,
-    critStat = "monetize",
-    apply = function(s, m)
-      local rev = math.floor(s.users * s.monetize / 1500)
-      s.money = s.money + rev
-      local g = addStatMult(s, "monetize", 8, 12, m)
-      local hd = math.random(3, 5)
-      s.hype = math.max(0, s.hype - hd)
-      return {
-        { label = "ガチャ売上", val = rev, suffix = "万" },
-        { label = "課金圧", val = g },
-        { label = "話題性", val = -hd },
-      }
-    end,
-  },
-  {
-    name = "石バラマキ",
-    effectDesc = "課金圧 -5~10\nユーザー +8%\n話題性 +3~5\n資金 -50万",
-    rarity = "normal",
-    energyCost = 5,
-    critStat = "hype",
-    apply = function(s, m)
-      local dec = math.random(5, 10)
-      s.monetize = math.max(0, s.monetize - dec)
-      local gu = addUsers(s, 0.08 * m)
-      local g = addStatMult(s, "hype", 3, 5, m)
-      s.money = s.money - 50
-      return {
-        { label = "課金圧", val = -dec },
-        { label = "ユーザー", val = gu, suffix = "人" },
-        { label = "話題性", val = g },
-        { label = "資金", val = -50, suffix = "万" },
-      }
-    end,
-  },
-}
-
--- ===== 運営期レアカード =====
-local opsRareCards = {
-  {
-    name = "大型アップデート",
-    effectDesc = "コンテンツ力 +15~20\n技術力 +3~5\n話題性 +8~12\n資金 -300万",
-    rarity = "rare",
-    energyCost = 25,
-    critStat = "content",
-    apply = function(s, m)
-      local g1 = addStatMult(s, "content", 15, 20, m)
-      local g2 = addStatMult(s, "tech", 3, 5, m)
-      local g3 = addStatMult(s, "hype", 8, 12, m)
-      s.money = s.money - 300
-      return {
-        { label = "コンテンツ力", val = g1 },
-        { label = "技術力", val = g2 },
-        { label = "話題性", val = g3 },
-        { label = "資金", val = -300, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "有名配信者が紹介",
-    effectDesc = "話題性 +15~25\nユーザー +15%",
-    rarity = "rare",
-    energyCost = 5,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 15, 25, m)
-      local gu = addUsers(s, 0.15 * m)
-      return {
-        { label = "話題性", val = g },
-        { label = "ユーザー", val = gu, suffix = "人" },
-      }
-    end,
-  },
-  {
-    name = "コラボ先からオファー",
-    effectDesc = "話題性 +10~15\nユーザー +10%\n資金 +100万",
-    rarity = "rare",
-    energyCost = 5,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 10, 15, m)
-      local gu = addUsers(s, 0.10 * m)
-      s.money = s.money + 100
-      return {
-        { label = "話題性", val = g },
-        { label = "ユーザー", val = gu, suffix = "人" },
-        { label = "資金", val = 100, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "福袋販売",
-    effectDesc = "資金 +200万\n話題性 +3~5",
-    rarity = "rare",
-    energyCost = 5,
-    critStat = "monetize",
-    apply = function(s, m)
-      s.money = s.money + math.floor(200 * m)
-      local g = addStatMult(s, "hype", 3, 5, m)
-      return {
-        { label = "資金", val = math.floor(200 * m), suffix = "万" },
-        { label = "話題性", val = g },
-      }
-    end,
-  },
-}
-
--- ===== 強制イベント =====
-local negativeEvents = {
-  {
-    name = "緊急メンテナンス",
-    effectDesc = "ユーザー -5%\n話題性 -5",
-    isNegative = true,
-    condition = function(s) return s.tech < 40 end,
-    apply = function(s)
-      local lost = loseUsers(s, 0.05)
-      s.hype = math.max(0, s.hype - 5)
-      return {
-        { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "話題性", val = -5 },
-      }
-    end,
-  },
-  {
-    name = "ガチャ確率誤表記発覚",
-    effectDesc = "資金 -300万\nユーザー -8%\n話題性 -10",
-    isNegative = true,
-    condition = function(s) return s.monetize > 50 end,
-    apply = function(s)
-      s.money = s.money - 300
-      local lost = loseUsers(s, 0.08)
-      s.hype = math.max(0, s.hype - 10)
-      return {
-        { label = "資金", val = -300, suffix = "万" },
-        { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "話題性", val = -10 },
-      }
-    end,
-  },
-  {
-    name = "公式SNS失言",
-    effectDesc = "話題性 -10",
-    isNegative = true,
-    condition = function(s) return true end,
-    apply = function(s)
-      s.hype = math.max(0, s.hype - 10)
-      return { { label = "話題性", val = -10 } }
-    end,
-  },
-  {
-    name = "競合タイトル登場",
-    effectDesc = "ユーザー -10%\n話題性 -8",
-    isNegative = true,
-    condition = function(s) return s.opsTurn > 6 end,
-    apply = function(s)
-      local lost = loseUsers(s, 0.10)
-      s.hype = math.max(0, s.hype - 8)
-      return {
-        { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "話題性", val = -8 },
-      }
-    end,
-  },
-  {
-    name = "サーバーダウン",
-    effectDesc = "ユーザー -5%\n資金 -100万",
-    isNegative = true,
-    condition = function(s) return s.tech < 40 end,
-    apply = function(s)
-      local lost = loseUsers(s, 0.05)
-      s.money = s.money - 100
-      return {
-        { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "資金", val = -100, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "炎上",
-    effectDesc = "ユーザー -8%\n課金圧 -5\n話題性 +5",
-    isNegative = true,
-    condition = function(s) return s.monetize > 50 end,
-    apply = function(s)
-      local lost = loseUsers(s, 0.08)
-      s.monetize = math.max(0, s.monetize - 5)
-      s.hype = math.min(MAX_STAT, s.hype + 5)
-      return {
-        { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "課金圧", val = -5 },
-        { label = "話題性(悪名)", val = 5 },
-      }
-    end,
-  },
-  {
-    name = "チーター横行",
-    effectDesc = "ユーザー -5%\n技術力 -5",
-    isNegative = true,
-    condition = function(s) return s.tech < 35 and s.users > 3000 end,
-    apply = function(s)
-      local lost = loseUsers(s, 0.05)
-      s.tech = math.max(0, s.tech - 5)
-      return {
-        { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "技術力", val = -5 },
-      }
-    end,
-  },
-  {
-    name = "セルラン圏外転落",
-    effectDesc = "話題性 -15",
-    isNegative = true,
-    condition = function(s) return s.lastRevenue < 150 end,
-    apply = function(s)
-      s.hype = math.max(0, s.hype - 15)
-      return { { label = "話題性", val = -15 } }
-    end,
-  },
-}
-
-local positiveEvents = {
-  {
-    name = "セルラン1位！",
-    effectDesc = "話題性 +20\nユーザー +10%",
-    isNegative = false,
-    condition = function(s) return s.lastRevenue > 500 end,
-    apply = function(s)
-      s.hype = math.min(MAX_STAT, s.hype + 20)
-      local gu = addUsers(s, 0.10)
-      return {
-        { label = "話題性", val = 20 },
-        { label = "ユーザー", val = gu, suffix = "人" },
-      }
-    end,
-  },
-  {
-    name = "Twitterでバズった",
-    effectDesc = "話題性 +15\nユーザー +5%",
-    isNegative = false,
-    condition = function(s) return s.content > 60 end,
-    apply = function(s)
-      s.hype = math.min(MAX_STAT, s.hype + 15)
-      local gu = addUsers(s, 0.05)
-      return {
-        { label = "話題性", val = 15 },
-        { label = "ユーザー", val = gu, suffix = "人" },
-      }
-    end,
-  },
-  {
-    name = "二次創作が増加",
-    effectDesc = "話題性 +10\nコンテンツ力 +5",
-    isNegative = false,
-    condition = function(s) return s.content > 50 and s.hype > 40 end,
-    apply = function(s)
-      s.hype = math.min(MAX_STAT, s.hype + 10)
-      s.content = math.min(MAX_STAT, s.content + 5)
-      return {
-        { label = "話題性", val = 10 },
-        { label = "コンテンツ力", val = 5 },
-      }
-    end,
-  },
-  {
-    name = "ストアフィーチャー",
-    effectDesc = "ユーザー +20%",
-    isNegative = false,
-    condition = function(s) return s.content > 60 and s.tech > 50 end,
-    apply = function(s)
-      local gu = addUsers(s, 0.20)
-      return { { label = "ユーザー", val = gu, suffix = "人" } }
-    end,
-  },
-  {
-    name = "攻略wikiが充実",
-    effectDesc = "ユーザー離脱率が3ターン低下",
-    isNegative = false,
-    condition = function(s) return s.users > 5000 end,
-    apply = function(s)
-      s.churnReduction = 3
-      s.churnReductionAmt = 0.02
-      return { { label = "離脱率低下", val = -2, suffix = "% (3ターン)" } }
-    end,
-  },
-  {
-    name = "投資家から出資",
-    effectDesc = "資金 +300万（借金ではない）",
-    isNegative = false,
-    condition = function(s) return s.users > 8000 and s.money > 0 end,
-    apply = function(s)
-      s.money = s.money + 300
-      return { { label = "資金", val = 300, suffix = "万" } }
-    end,
+    description = "新規獲得",
   },
 }
 
@@ -653,15 +209,18 @@ local releaseResult = nil
 -- スナップショット取得
 local function takeSnapshot()
   stateSnapshot = {
-    users = state.users,
+    N = state.N,
+    C = state.C,
+    T = state.T,
+    maxN = state.maxN,
+    maxC = state.maxC,
+    maxT = state.maxT,
     money = state.money,
     debt = state.debt,
-    content = state.content,
-    tech = state.tech,
-    hype = state.hype,
-    monetize = state.monetize,
-    energy = state.energy,
-    preregUsers = state.preregUsers,
+    players = state.players,
+    cellRank = state.cellRank,
+    storeRating = state.storeRating,
+    monthlySales = state.monthlySales,
   }
 end
 
