@@ -749,20 +749,50 @@ function processMonthEnd()
 
   -- 運営期の収益計算
   if state.phase == "ops" then
-    -- 簡易収益計算（仮）
-    local revenue = math.floor((state.maxN + state.maxC) * 10 + state.trend * 5)
+    -- 時間減衰計算（月経過で加速）
+    local opsMonth = state.month - DEV_MONTHS
+    local baseDecay = 1.0
+    local decayAccel = opsMonth * 0.01  -- 月ごとに1%悪化
+    state.decay = baseDecay - decayAccel
+
+    -- 流行が高いほど減衰を緩和
+    if state.trend > 50 then
+      state.decay = state.decay + 0.2
+    elseif state.trend > 20 then
+      state.decay = state.decay + 0.1
+    elseif state.trend < -20 then
+      state.decay = state.decay - 0.1
+    end
+    state.decay = math.max(0.3, math.min(1.0, state.decay))
+
+    -- 流行補正（-100〜+100 → 0.5〜1.5）
+    local trendBonus = 1.0 + (state.trend / 200)
+    trendBonus = math.max(0.5, math.min(1.5, trendBonus))
+
+    -- 勢い計算
+    state.momentum = (state.maxN + state.maxC) * trendBonus * state.decay
+
+    -- 課金率（技術力が影響）
+    local chargeRate = 0.15 + (state.maxT * 0.002)
+    chargeRate = math.min(0.3, chargeRate)
+
+    -- 収益計算
+    local revenue = math.floor(state.momentum * chargeRate * 100)
     state.money = state.money + revenue
     table.insert(monthEndReport, { label = "収益", val = revenue, suffix = "万" })
 
-    -- 維持費
-    local cost = 200
+    -- 維持費（ユーザー規模に応じて変動）
+    local baseCost = 150
+    local scaleCost = math.floor(state.momentum * 0.5)
+    local cost = baseCost + scaleCost
     state.money = state.money - cost
     table.insert(monthEndReport, { label = "維持費", val = -cost, suffix = "万" })
   end
 
-  -- 流行減衰
+  -- 流行減衰（月経過で加速）
   if state.phase == "ops" then
-    local trendDecay = 2
+    local opsMonth = state.month - DEV_MONTHS
+    local trendDecay = 2 + math.floor(opsMonth / 6)  -- 6ヶ月ごとに+1
     state.trend = math.max(-100, state.trend - trendDecay)
   end
 
