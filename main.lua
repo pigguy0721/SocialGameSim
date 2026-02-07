@@ -94,33 +94,296 @@ end
 
 -- ===== イベント/行動定義 =====
 
--- イベント定義（ダミー）
+-- イベント定義
 local allEvents = {
+  -- 開発期プラスイベント
   {
-    id = "event_bug",
-    name = "バグ発見",
-    desc = "重大なバグが発覚した",
-    type = "minus",
-    phase = "both",  -- "dev" | "ops" | "both"
-    costN = 0, costC = 0, costT = 5,
+    id = "dev_media",
+    name = "メディア取材",
+    desc = "ゲーム雑誌から取材依頼",
+    type = "plus",
+    phase = "dev",
+    costN = 5, costC = 0, costT = 0,
     apply = function(s)
-      s.money = s.money - 50
+      s.maxN = s.maxN + 2
       return {
-        { label = "資金", val = -50, suffix = "万" },
+        { label = "知名度上限", val = 2 },
       }
     end,
   },
   {
-    id = "event_pr",
-    name = "メディア取材",
-    desc = "メディアから取材依頼が来た",
+    id = "dev_creator",
+    name = "有名クリエイター参加",
+    desc = "著名クリエイターが協力を申し出た",
     type = "plus",
-    phase = "both",
-    costN = 5, costC = 0, costT = 0,
+    phase = "dev",
+    costN = 3, costC = 5, costT = 0,
     apply = function(s)
+      s.maxC = s.maxC + 3
       s.maxN = s.maxN + 1
       return {
+        { label = "コンテンツ上限", val = 3 },
         { label = "知名度上限", val = 1 },
+      }
+    end,
+  },
+  {
+    id = "dev_smooth",
+    name = "開発順調",
+    desc = "予定より開発が順調に進んでいる",
+    type = "plus",
+    phase = "dev",
+    costN = 0, costC = 3, costT = 3,
+    apply = function(s)
+      s.maxC = s.maxC + 1
+      s.maxT = s.maxT + 1
+      return {
+        { label = "コンテンツ上限", val = 1 },
+        { label = "技術力上限", val = 1 },
+      }
+    end,
+  },
+  {
+    id = "dev_prototype",
+    name = "試遊会が好評",
+    desc = "内部試遊会で高評価",
+    type = "plus",
+    phase = "dev",
+    costN = 0, costC = 5, costT = 0,
+    apply = function(s)
+      s.maxC = s.maxC + 2
+      return {
+        { label = "コンテンツ上限", val = 2 },
+      }
+    end,
+  },
+  {
+    id = "dev_investment",
+    name = "追加投資",
+    desc = "投資家から追加資金を獲得",
+    type = "plus",
+    phase = "dev",
+    costN = 5, costC = 0, costT = 0,
+    apply = function(s)
+      s.money = s.money + 300
+      return {
+        { label = "資金", val = 300, suffix = "万" },
+      }
+    end,
+  },
+
+  -- 開発期マイナスイベント
+  {
+    id = "dev_bug",
+    name = "重大バグ発見",
+    desc = "深刻なバグが発覚した",
+    type = "minus",
+    phase = "dev",
+    costN = 0, costC = 0, costT = 8,
+    apply = function(s)
+      s.money = s.money - 100
+      return {
+        { label = "資金", val = -100, suffix = "万" },
+      }
+    end,
+  },
+  {
+    id = "dev_quit",
+    name = "スタッフ退職",
+    desc = "主要スタッフが退職した",
+    type = "minus",
+    phase = "dev",
+    costN = 3, costC = 3, costT = 3,
+    apply = function(s)
+      s.money = s.money - 150
+      return {
+        { label = "資金", val = -150, suffix = "万" },
+      }
+    end,
+  },
+  {
+    id = "dev_spec_change",
+    name = "仕様変更",
+    desc = "大幅な仕様変更が必要に",
+    type = "minus",
+    phase = "dev",
+    costN = 0, costC = 10, costT = 5,
+    apply = function(s)
+      s.money = s.money - 200
+      return {
+        { label = "資金", val = -200, suffix = "万" },
+      }
+    end,
+  },
+  {
+    id = "dev_competitor",
+    name = "競合タイトル発表",
+    desc = "類似ゲームが先行発表された",
+    type = "minus",
+    phase = "dev",
+    costN = 8, costC = 0, costT = 0,
+    apply = function(s)
+      s.maxN = math.max(5, s.maxN - 2)
+      return {
+        { label = "知名度上限", val = -2 },
+      }
+    end,
+  },
+
+  -- 運営期プラスイベント
+  {
+    id = "ops_viral",
+    name = "バズる",
+    desc = "SNSで大きな話題に",
+    type = "plus",
+    phase = "ops",
+    costN = 5, costC = 0, costT = 0,
+    apply = function(s)
+      s.trend = s.trend + 15
+      s.maxN = s.maxN + 2
+      return {
+        { label = "流行", val = 15 },
+        { label = "知名度上限", val = 2 },
+      }
+    end,
+  },
+  {
+    id = "ops_collab",
+    name = "コラボ決定",
+    desc = "人気作品とのコラボが決定",
+    type = "plus",
+    phase = "ops",
+    costN = 8, costC = 5, costT = 0,
+    apply = function(s)
+      s.trend = s.trend + 20
+      s.maxC = s.maxC + 2
+      return {
+        { label = "流行", val = 20 },
+        { label = "コンテンツ上限", val = 2 },
+      }
+    end,
+  },
+  {
+    id = "ops_review",
+    name = "好意的レビュー",
+    desc = "有名レビューサイトで高評価",
+    type = "plus",
+    phase = "ops",
+    costN = 3, costC = 0, costT = 0,
+    apply = function(s)
+      s.trend = s.trend + 10
+      return {
+        { label = "流行", val = 10 },
+      }
+    end,
+  },
+  {
+    id = "ops_event_success",
+    name = "イベント盛況",
+    desc = "ゲーム内イベントが大成功",
+    type = "plus",
+    phase = "ops",
+    costN = 0, costC = 8, costT = 0,
+    apply = function(s)
+      s.trend = s.trend + 12
+      s.money = s.money + 200
+      return {
+        { label = "流行", val = 12 },
+        { label = "資金", val = 200, suffix = "万" },
+      }
+    end,
+  },
+  {
+    id = "ops_popular_char",
+    name = "新キャラが人気",
+    desc = "新キャラクターが予想外のヒット",
+    type = "plus",
+    phase = "ops",
+    costN = 0, costC = 5, costT = 0,
+    apply = function(s)
+      s.trend = s.trend + 8
+      s.money = s.money + 150
+      return {
+        { label = "流行", val = 8 },
+        { label = "資金", val = 150, suffix = "万" },
+      }
+    end,
+  },
+
+  -- 運営期マイナスイベント
+  {
+    id = "ops_flame",
+    name = "炎上",
+    desc = "不適切な表現で炎上",
+    type = "minus",
+    phase = "ops",
+    costN = 10, costC = 5, costT = 0,
+    apply = function(s)
+      s.trend = s.trend - 25
+      s.money = s.money - 300
+      return {
+        { label = "流行", val = -25 },
+        { label = "資金", val = -300, suffix = "万" },
+      }
+    end,
+  },
+  {
+    id = "ops_major_bug",
+    name = "大型バグ発生",
+    desc = "進行不能バグが発生",
+    type = "minus",
+    phase = "ops",
+    costN = 0, costC = 0, costT = 10,
+    apply = function(s)
+      s.trend = s.trend - 15
+      s.money = s.money - 200
+      return {
+        { label = "流行", val = -15 },
+        { label = "資金", val = -200, suffix = "万" },
+      }
+    end,
+  },
+  {
+    id = "ops_server_down",
+    name = "サーバーダウン",
+    desc = "サーバーが長時間停止",
+    type = "minus",
+    phase = "ops",
+    costN = 0, costC = 0, costT = 8,
+    apply = function(s)
+      s.trend = s.trend - 10
+      s.money = s.money - 250
+      return {
+        { label = "流行", val = -10 },
+        { label = "資金", val = -250, suffix = "万" },
+      }
+    end,
+  },
+  {
+    id = "ops_new_competitor",
+    name = "強力な競合出現",
+    desc = "大手が類似ゲームをリリース",
+    type = "minus",
+    phase = "ops",
+    costN = 5, costC = 5, costT = 0,
+    apply = function(s)
+      s.trend = s.trend - 20
+      return {
+        { label = "流行", val = -20 },
+      }
+    end,
+  },
+  {
+    id = "ops_user_leave",
+    name = "ユーザー離反",
+    desc = "虚無期間でユーザーが離れる",
+    type = "minus",
+    phase = "ops",
+    costN = 0, costC = 8, costT = 0,
+    apply = function(s)
+      s.trend = s.trend - 12
+      return {
+        { label = "流行", val = -12 },
       }
     end,
   },
@@ -158,6 +421,43 @@ local devActions = {
       s.maxT = s.maxT + 1
       return {
         { label = "技術力上限", val = 1 },
+      }
+    end,
+  },
+  {
+    name = "外注依頼",
+    desc = "外部リソースを活用",
+    costN = 2, costC = 3, costT = 2,
+    apply = function(s)
+      s.maxC = s.maxC + 2
+      s.money = s.money - 100
+      return {
+        { label = "コンテンツ上限", val = 2 },
+        { label = "資金", val = -100, suffix = "万" },
+      }
+    end,
+  },
+  {
+    name = "市場調査",
+    desc = "ユーザーニーズを調査",
+    costN = 4, costC = 2, costT = 0,
+    apply = function(s)
+      s.maxN = s.maxN + 1
+      s.maxC = s.maxC + 1
+      return {
+        { label = "知名度上限", val = 1 },
+        { label = "コンテンツ上限", val = 1 },
+      }
+    end,
+  },
+  {
+    name = "テストプレイ",
+    desc = "内部テストでバグ修正",
+    costN = 0, costC = 3, costT = 4,
+    apply = function(s)
+      s.maxT = s.maxT + 2
+      return {
+        { label = "技術力上限", val = 2 },
       }
     end,
   },
@@ -263,7 +563,7 @@ local opsActions = {
       s.trend = s.trend + 5
       return {
         { label = "知名度上限", val = 1 },
-        { label = "流行+", val = 5 },
+        { label = "流行", val = 5 },
       }
     end,
   },
@@ -276,7 +576,7 @@ local opsActions = {
       s.trend = s.trend + 3
       return {
         { label = "コンテンツ上限", val = 1 },
-        { label = "流行+", val = 3 },
+        { label = "流行", val = 3 },
       }
     end,
   },
@@ -288,6 +588,58 @@ local opsActions = {
       s.maxT = s.maxT + 1
       return {
         { label = "技術力上限", val = 1 },
+      }
+    end,
+  },
+  {
+    name = "キャンペーン開催",
+    desc = "ログインボーナス強化",
+    costN = 4, costC = 2, costT = 0,
+    apply = function(s)
+      s.trend = s.trend + 8
+      s.money = s.money - 100
+      return {
+        { label = "流行", val = 8 },
+        { label = "資金", val = -100, suffix = "万" },
+      }
+    end,
+  },
+  {
+    name = "ガチャ追加",
+    desc = "新規ガチャをリリース",
+    costN = 3, costC = 4, costT = 2,
+    apply = function(s)
+      s.trend = s.trend + 6
+      s.money = s.money + 150
+      return {
+        { label = "流行", val = 6 },
+        { label = "資金", val = 150, suffix = "万" },
+      }
+    end,
+  },
+  {
+    name = "イベント開催",
+    desc = "期間限定イベントを実施",
+    costN = 2, costC = 6, costT = 3,
+    apply = function(s)
+      s.maxC = s.maxC + 1
+      s.trend = s.trend + 7
+      return {
+        { label = "コンテンツ上限", val = 1 },
+        { label = "流行", val = 7 },
+      }
+    end,
+  },
+  {
+    name = "生放送配信",
+    desc = "公式生放送で情報発信",
+    costN = 6, costC = 2, costT = 0,
+    apply = function(s)
+      s.maxN = s.maxN + 1
+      s.trend = s.trend + 4
+      return {
+        { label = "知名度上限", val = 1 },
+        { label = "流行", val = 4 },
       }
     end,
   },
@@ -316,22 +668,37 @@ function processMonthStart()
   -- 行動回数リセット
   state.actionsRemaining = ACTIONS_PER_MONTH
 
-  -- イベント生成（ダミー：常に2件）
+  -- イベント生成（フェーズに応じて4件）
   state.currentMonthEvents = {}
   state.handledEvents = {}
-  for i = 1, 2 do
-    local evt = allEvents[math.random(1, #allEvents)]
-    local copy = {
-      id = evt.id .. "_" .. i,
-      name = evt.name,
-      desc = evt.desc,
-      type = evt.type,
-      costN = evt.costN,
-      costC = evt.costC,
-      costT = evt.costT,
-      apply = evt.apply,
-    }
-    table.insert(state.currentMonthEvents, copy)
+
+  -- 現在のフェーズに適したイベントを抽出
+  local eligibleEvents = {}
+  for _, evt in ipairs(allEvents) do
+    if evt.phase == state.phase or evt.phase == "both" then
+      table.insert(eligibleEvents, evt)
+    end
+  end
+
+  -- ランダムに4件選択（重複なし）
+  if #eligibleEvents > 0 then
+    local selected = {}
+    for i = 1, math.min(4, #eligibleEvents) do
+      local idx = math.random(1, #eligibleEvents)
+      local evt = eligibleEvents[idx]
+      local copy = {
+        id = evt.id .. "_" .. state.month .. "_" .. i,
+        name = evt.name,
+        desc = evt.desc,
+        type = evt.type,
+        costN = evt.costN,
+        costC = evt.costC,
+        costT = evt.costT,
+        apply = evt.apply,
+      }
+      table.insert(state.currentMonthEvents, copy)
+      table.remove(eligibleEvents, idx)
+    end
   end
 
   -- 未来イベント更新（ダミー）
