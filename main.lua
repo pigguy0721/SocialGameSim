@@ -161,7 +161,96 @@ local devActions = {
       }
     end,
   },
+  {
+    name = "アイテム調達",
+    desc = "ランダムなアイテムを獲得",
+    costN = 3, costC = 3, costT = 3,
+    apply = function(s)
+      local item = generateItem()
+      table.insert(s.items, item)
+      return {
+        { label = "獲得", val = 0, text = item.name .. "（" .. item.desc .. "）" },
+      }
+    end,
+  },
 }
+
+-- ===== アイテムシステム =====
+
+-- アイテムテンプレート
+local itemTemplates = {
+  {
+    type = "money",
+    namePattern = "資金調達",
+    minValue = 100,
+    maxValue = 500,
+    descPattern = "資金+%d万",
+  },
+  {
+    type = "resource_n",
+    namePattern = "PRキット",
+    minValue = 3,
+    maxValue = 8,
+    descPattern = "知名度上限+%d",
+  },
+  {
+    type = "resource_c",
+    namePattern = "企画案",
+    minValue = 3,
+    maxValue = 8,
+    descPattern = "コンテンツ上限+%d",
+  },
+  {
+    type = "resource_t",
+    namePattern = "技術資料",
+    minValue = 3,
+    maxValue = 8,
+    descPattern = "技術力上限+%d",
+  },
+  {
+    type = "trend",
+    namePattern = "バズネタ",
+    minValue = 5,
+    maxValue = 20,
+    descPattern = "流行+%d",
+  },
+}
+
+-- アイテム生成
+function generateItem()
+  local template = itemTemplates[math.random(1, #itemTemplates)]
+  local value = math.random(template.minValue, template.maxValue)
+  return {
+    type = template.type,
+    name = template.namePattern,
+    value = value,
+    desc = string.format(template.descPattern, value),
+  }
+end
+
+-- アイテム使用
+function useItem(item)
+  local result = {}
+
+  if item.type == "money" then
+    state.money = state.money + item.value
+    table.insert(result, { label = "資金", val = item.value, suffix = "万" })
+  elseif item.type == "resource_n" then
+    state.maxN = state.maxN + item.value
+    table.insert(result, { label = "知名度上限", val = item.value })
+  elseif item.type == "resource_c" then
+    state.maxC = state.maxC + item.value
+    table.insert(result, { label = "コンテンツ上限", val = item.value })
+  elseif item.type == "resource_t" then
+    state.maxT = state.maxT + item.value
+    table.insert(result, { label = "技術力上限", val = item.value })
+  elseif item.type == "trend" then
+    state.trend = state.trend + item.value
+    table.insert(result, { label = "流行", val = item.value })
+  end
+
+  return result
+end
 
 -- 運営期行動
 local opsActions = {
@@ -199,6 +288,18 @@ local opsActions = {
       s.maxT = s.maxT + 1
       return {
         { label = "技術力上限", val = 1 },
+      }
+    end,
+  },
+  {
+    name = "アイテム調達",
+    desc = "ランダムなアイテムを獲得",
+    costN = 3, costC = 3, costT = 3,
+    apply = function(s)
+      local item = generateItem()
+      table.insert(s.items, item)
+      return {
+        { label = "獲得", val = 0, text = item.name .. "（" .. item.desc .. "）" },
       }
     end,
   },
@@ -425,29 +526,57 @@ function love.keypressed(key)
         selectedIndex = 1
       end
     elseif subState == "action_select" then
-      -- 選択処理（仮）
+      -- 選択処理
       if key == "up" then
         selectedIndex = math.max(1, selectedIndex - 1)
       elseif key == "down" then
-        local maxIdx = #state.currentMonthEvents + 3  -- イベント + 通常行動
+        local actions = state.phase == "dev" and devActions or opsActions
+        local unhandledEvents = 0
+        for _, evt in ipairs(state.currentMonthEvents) do
+          local handled = false
+          for _, id in ipairs(state.handledEvents) do
+            if id == evt.id then handled = true break end
+          end
+          if not handled then unhandledEvents = unhandledEvents + 1 end
+        end
+        local maxIdx = unhandledEvents + #actions + #state.items
         selectedIndex = math.min(maxIdx, selectedIndex + 1)
       elseif key == "space" or key == "return" then
+        -- 未対応イベント数をカウント
+        local unhandledEvents = {}
+        for _, evt in ipairs(state.currentMonthEvents) do
+          local handled = false
+          for _, id in ipairs(state.handledEvents) do
+            if id == evt.id then handled = true break end
+          end
+          if not handled then table.insert(unhandledEvents, evt) end
+        end
+
         -- 行動実行
-        if selectedIndex <= #state.currentMonthEvents then
+        if selectedIndex <= #unhandledEvents then
           -- イベント対応
-          local evt = state.currentMonthEvents[selectedIndex]
+          local evt = unhandledEvents[selectedIndex]
           if canAffordAction(evt) then
             lastActionResult = handleEvent(evt)
             subState = "action_result"
           end
         else
-          -- 通常行動
           local actions = state.phase == "dev" and devActions or opsActions
-          local actionIdx = selectedIndex - #state.currentMonthEvents
+          local actionIdx = selectedIndex - #unhandledEvents
           if actionIdx >= 1 and actionIdx <= #actions then
+            -- 通常行動
             local action = actions[actionIdx]
             if canAffordAction(action) then
               lastActionResult = executeAction(action)
+              subState = "action_result"
+            end
+          else
+            -- アイテム使用
+            local itemIdx = selectedIndex - #unhandledEvents - #actions
+            if itemIdx >= 1 and itemIdx <= #state.items then
+              local item = state.items[itemIdx]
+              lastActionResult = useItem(item)
+              table.remove(state.items, itemIdx)
               subState = "action_result"
             end
           end
@@ -602,9 +731,27 @@ function drawActionSelectScreen()
     idx = idx + 1
   end
 
+  -- アイテム
+  if #state.items > 0 then
+    y = y + 10
+    love.graphics.setColor(1, 1, 1)
+    boldPrint("【アイテム使用】（行動消費なし）", 50, y)
+    y = y + 30
+    for i, item in ipairs(state.items) do
+      local color = idx == selectedIndex and {1, 1, 0} or {0.5, 1, 1}
+      love.graphics.setColor(color)
+      boldPrint((idx) .. ". " .. item.name .. " (" .. item.desc .. ")", 70, y)
+      y = y + 25
+      idx = idx + 1
+    end
+  end
+
   love.graphics.setColor(1, 1, 1)
   love.graphics.setFont(tinyFont)
   boldPrint("↑↓: Select  SPACE: Execute", 50, 500)
+  if #state.items > 0 then
+    boldPrint("アイテム: " .. #state.items .. "個所持", 50, 520)
+  end
 end
 
 function drawActionResultScreen()
@@ -615,7 +762,12 @@ function drawActionResultScreen()
   love.graphics.setFont(smallFont)
   local y = 100
   for _, r in ipairs(lastActionResult) do
-    local text = r.label .. ": " .. (r.val >= 0 and "+" or "") .. r.val .. (r.suffix or "")
+    local text
+    if r.text then
+      text = r.label .. ": " .. r.text
+    else
+      text = r.label .. ": " .. (r.val >= 0 and "+" or "") .. r.val .. (r.suffix or "")
+    end
     boldPrint(text, 70, y)
     y = y + 30
   end
