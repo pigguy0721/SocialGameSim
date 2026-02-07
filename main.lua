@@ -701,12 +701,32 @@ function processMonthStart()
     end
   end
 
-  -- 未来イベント更新（ダミー）
-  state.futureEvents = {
-    { month = state.month + 1, name = "イベントA" },
-    { month = state.month + 2, name = "イベントB" },
-    { month = state.month + 3, name = "イベントC" },
-  }
+  -- 未来イベント更新（3ヶ月先まで予告）
+  state.futureEvents = {}
+  for offset = 1, 3 do
+    local futureMonth = state.month + offset
+    if futureMonth <= TOTAL_MONTHS then
+      -- 将来のフェーズを判定
+      local futurePhase = futureMonth <= DEV_MONTHS and "dev" or "ops"
+
+      -- 適したイベントから1つランダム選択
+      local futureEligible = {}
+      for _, evt in ipairs(allEvents) do
+        if evt.phase == futurePhase or evt.phase == "both" then
+          table.insert(futureEligible, evt)
+        end
+      end
+
+      if #futureEligible > 0 then
+        local evt = futureEligible[math.random(1, #futureEligible)]
+        table.insert(state.futureEvents, {
+          month = futureMonth,
+          name = evt.name,
+          type = evt.type,
+        })
+      end
+    end
+  end
 end
 
 function processMonthEnd()
@@ -1037,12 +1057,23 @@ function drawMonthStartScreen()
   boldPrint("フェーズ: " .. (state.phase == "dev" and "開発期" or "運営期"), 50, 70)
   boldPrint("資金: " .. state.money .. "万円", 50, 100)
 
-  -- イベント一覧
+  -- 今月のイベント一覧
   boldPrint("今月のイベント:", 50, 140)
   for i, evt in ipairs(state.currentMonthEvents) do
     local color = evt.type == "plus" and {0.5, 1, 0.5} or {1, 0.5, 0.5}
     love.graphics.setColor(color)
     boldPrint((i) .. ". " .. evt.name .. " - " .. evt.desc, 70, 140 + i * 30)
+  end
+
+  -- 未来イベント予告
+  if #state.futureEvents > 0 then
+    love.graphics.setColor(1, 1, 1)
+    boldPrint("今後の予定:", 420, 140)
+    for i, futureEvt in ipairs(state.futureEvents) do
+      local color = futureEvt.type == "plus" and {0.7, 1, 0.7} or {1, 0.7, 0.7}
+      love.graphics.setColor(color)
+      boldPrint(futureEvt.month .. "ヶ月目: " .. futureEvt.name, 440, 140 + i * 25)
+    end
   end
 
   love.graphics.setColor(1, 1, 1)
