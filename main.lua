@@ -38,6 +38,7 @@ local monthEndReport = {}
 -- フォント
 local titleFont, menuFont, smallFont, tinyFont
 local isBorderlessFullscreen = false
+local isMonthStarted = false  -- 月初フラグ
 
 -- ===== 太字描画ヘルパー =====
 function boldPrint(text, x, y)
@@ -727,6 +728,12 @@ function processMonthStart()
       end
     end
   end
+
+  -- subStateを直接設定
+  subState = "action_select"
+  selectedIndex = 1
+  isMonthStarted = true
+  lastActionResult = {}  -- 前回の結果をクリア
 end
 
 function processMonthEnd()
@@ -840,7 +847,6 @@ function advanceMonth()
   end
 
   processMonthStart()
-  subState = "month_start"
 end
 
 -- リリース処理
@@ -934,15 +940,9 @@ function love.keypressed(key)
     if key == "space" or key == "return" then
       gameState = "game"
       processMonthStart()
-      subState = "month_start"
     end
   elseif gameState == "game" then
-    if subState == "month_start" then
-      if key == "space" or key == "return" then
-        subState = "action_select"
-        selectedIndex = 1
-      end
-    elseif subState == "action_select" then
+    if subState == "action_select" then
       -- 選択処理
       if key == "up" then
         selectedIndex = math.max(1, selectedIndex - 1)
@@ -975,7 +975,13 @@ function love.keypressed(key)
           local evt = unhandledEvents[selectedIndex]
           if canAffordAction(evt) then
             lastActionResult = handleEvent(evt)
-            subState = "action_result"
+            -- 月末判定
+            if state.actionsRemaining == 0 then
+              processMonthEnd()
+              subState = "month_end"
+            else
+              selectedIndex = 1
+            end
           end
         else
           local actions = state.phase == "dev" and devActions or opsActions
@@ -985,7 +991,13 @@ function love.keypressed(key)
             local action = actions[actionIdx]
             if canAffordAction(action) then
               lastActionResult = executeAction(action)
-              subState = "action_result"
+              -- 月末判定
+              if state.actionsRemaining == 0 then
+                processMonthEnd()
+                subState = "month_end"
+              else
+                selectedIndex = 1
+              end
             end
           else
             -- アイテム使用
@@ -994,19 +1006,10 @@ function love.keypressed(key)
               local item = state.items[itemIdx]
               lastActionResult = useItem(item)
               table.remove(state.items, itemIdx)
-              subState = "action_result"
+              -- アイテムは行動消費なし
+              selectedIndex = 1
             end
           end
-        end
-      end
-    elseif subState == "action_result" then
-      if key == "space" or key == "return" then
-        if state.actionsRemaining > 0 then
-          subState = "action_select"
-          selectedIndex = 1
-        else
-          processMonthEnd()
-          subState = "month_end"
         end
       end
     elseif subState == "month_end" then
@@ -1045,12 +1048,8 @@ function love.draw()
   if gameState == "title" then
     drawTitleScreen()
   elseif gameState == "game" then
-    if subState == "month_start" then
-      drawMonthStartScreen()
-    elseif subState == "action_select" then
+    if subState == "action_select" then
       drawActionSelectScreen()
-    elseif subState == "action_result" then
-      drawActionResultScreen()
     elseif subState == "month_end" then
       drawMonthEndScreen()
     elseif subState == "release" then
@@ -1078,56 +1077,79 @@ function drawTitleScreen()
   boldPrintf("Press SPACE to Start", 0, 350, BASE_W, "center")
 end
 
-function drawMonthStartScreen()
-  love.graphics.setFont(menuFont)
-  love.graphics.setColor(1, 1, 1)
-  boldPrint("月初: " .. state.month .. "ヶ月目", 50, 30)
-
-  love.graphics.setFont(smallFont)
-  boldPrint("フェーズ: " .. (state.phase == "dev" and "開発期" or "運営期"), 50, 70)
-  boldPrint("資金: " .. state.money .. "万円", 50, 100)
-
-  -- 今月のイベント一覧
-  boldPrint("今月のイベント:", 50, 140)
-  for i, evt in ipairs(state.currentMonthEvents) do
-    local color = evt.type == "plus" and {0.5, 1, 0.5} or {1, 0.5, 0.5}
-    love.graphics.setColor(color)
-    boldPrint((i) .. ". " .. evt.name .. " - " .. evt.desc, 70, 140 + i * 30)
-  end
-
-  -- 未来イベント予告
-  if #state.futureEvents > 0 then
-    love.graphics.setColor(1, 1, 1)
-    boldPrint("今後の予定:", 420, 140)
-    for i, futureEvt in ipairs(state.futureEvents) do
-      local color = futureEvt.type == "plus" and {0.7, 1, 0.7} or {1, 0.7, 0.7}
-      love.graphics.setColor(color)
-      boldPrint(futureEvt.month .. "ヶ月目: " .. futureEvt.name, 440, 140 + i * 25)
-    end
-  end
-
-  love.graphics.setColor(1, 1, 1)
-  love.graphics.setFont(tinyFont)
-  boldPrint("Press SPACE to continue", 50, 500)
-end
-
 function drawActionSelectScreen()
   love.graphics.setFont(menuFont)
-  love.graphics.setColor(1, 1, 1)
-  boldPrint(state.month .. "ヶ月目 - 行動選択", 50, 30)
+
+  -- 月初フラグに応じた表示
+  if isMonthStarted then
+    love.graphics.setColor(1, 1, 0)
+    boldPrint("★ " .. state.month .. "ヶ月目開始 ★", 50, 30)
+    isMonthStarted = false
+  else
+    love.graphics.setColor(1, 1, 1)
+    boldPrint(state.month .. "ヶ月目 - 行動選択", 50, 30)
+  end
 
   love.graphics.setFont(smallFont)
+  love.graphics.setColor(1, 1, 1)
+
   -- リソース表示
   boldPrint("N:" .. state.N .. "/" .. state.maxN .. "  C:" .. state.C .. "/" .. state.maxC .. "  T:" .. state.T .. "/" .. state.maxT, 50, 70)
   boldPrint("資金: " .. state.money .. "万  残り行動: " .. state.actionsRemaining, 50, 100)
 
-  -- 選択肢
-  local y = 140
+  -- 今月のイベント情報（左カラム）
+  love.graphics.setFont(tinyFont)
+  love.graphics.setColor(1, 1, 1)
+  boldPrint("今月のイベント:", 50, 130)
+  for i, evt in ipairs(state.currentMonthEvents) do
+    local color = evt.type == "plus" and {0.5, 1, 0.5} or {1, 0.5, 0.5}
+    love.graphics.setColor(color)
+    boldPrint(i .. ". " .. evt.name, 70, 130 + i * 18)
+  end
+
+  -- 未来イベント予告（右カラム）
+  if #state.futureEvents > 0 then
+    love.graphics.setColor(1, 1, 1)
+    boldPrint("今後の予定（3ヶ月先まで）:", 420, 130)
+    for i, futureEvt in ipairs(state.futureEvents) do
+      local color = futureEvt.type == "plus" and {0.7, 1, 0.7} or {1, 0.7, 0.7}
+      love.graphics.setColor(color)
+      boldPrint(futureEvt.month .. "ヶ月目: " .. futureEvt.name, 440, 130 + i * 18)
+    end
+  end
+
+  -- 前回の行動結果表示エリア
+  local resultY = 220
+  if #lastActionResult > 0 then
+    love.graphics.setFont(smallFont)
+    love.graphics.setColor(0.5, 1, 1)  -- シアン系
+    boldPrint("【前回の結果】", 50, resultY)
+    love.graphics.setFont(tinyFont)
+    local y = resultY + 22
+    -- 最大3行まで表示
+    for i = 1, math.min(3, #lastActionResult) do
+      local r = lastActionResult[i]
+      local text
+      if r.text then
+        text = "> " .. r.label .. ": " .. r.text
+      else
+        text = "> " .. r.label .. ": " .. (r.val >= 0 and "+" or "") .. r.val .. (r.suffix or "")
+      end
+      boldPrint(text, 70, y)
+      y = y + 18
+    end
+  end
+
+  -- 選択肢表示
+  local y = #lastActionResult > 0 and 285 or 240
   local idx = 1
 
-  -- イベント
+  love.graphics.setFont(smallFont)
+  love.graphics.setColor(1, 1, 1)
   boldPrint("【イベント対応】", 50, y)
-  y = y + 30
+  y = y + 25
+
+  love.graphics.setFont(tinyFont)
   for i, evt in ipairs(state.currentMonthEvents) do
     local handled = false
     for _, id in ipairs(state.handledEvents) do
@@ -1140,68 +1162,48 @@ function drawActionSelectScreen()
       local color = idx == selectedIndex and {1, 1, 0} or {1, 1, 1}
       love.graphics.setColor(color)
       boldPrint((idx) .. ". " .. evt.name .. " (N:" .. evt.costN .. " C:" .. evt.costC .. " T:" .. evt.costT .. ")", 70, y)
-      y = y + 25
+      y = y + 20
       idx = idx + 1
     end
   end
 
   -- 通常行動
-  y = y + 10
+  y = y + 8
+  love.graphics.setFont(smallFont)
   love.graphics.setColor(1, 1, 1)
   boldPrint("【通常行動】", 50, y)
-  y = y + 30
+  y = y + 25
+  love.graphics.setFont(tinyFont)
+
   local actions = state.phase == "dev" and devActions or opsActions
   for i, act in ipairs(actions) do
     local color = idx == selectedIndex and {1, 1, 0} or {1, 1, 1}
     love.graphics.setColor(color)
     boldPrint((idx) .. ". " .. act.name .. " (N:" .. act.costN .. " C:" .. act.costC .. " T:" .. act.costT .. ")", 70, y)
-    y = y + 25
+    y = y + 20
     idx = idx + 1
   end
 
   -- アイテム
   if #state.items > 0 then
-    y = y + 10
+    y = y + 8
+    love.graphics.setFont(smallFont)
     love.graphics.setColor(1, 1, 1)
     boldPrint("【アイテム使用】（行動消費なし）", 50, y)
-    y = y + 30
+    y = y + 25
+    love.graphics.setFont(tinyFont)
     for i, item in ipairs(state.items) do
       local color = idx == selectedIndex and {1, 1, 0} or {0.5, 1, 1}
       love.graphics.setColor(color)
       boldPrint((idx) .. ". " .. item.name .. " (" .. item.desc .. ")", 70, y)
-      y = y + 25
+      y = y + 20
       idx = idx + 1
     end
   end
 
-  love.graphics.setColor(1, 1, 1)
   love.graphics.setFont(tinyFont)
-  boldPrint("↑↓: Select  SPACE: Execute", 50, 500)
-  if #state.items > 0 then
-    boldPrint("アイテム: " .. #state.items .. "個所持", 50, 520)
-  end
-end
-
-function drawActionResultScreen()
-  love.graphics.setFont(menuFont)
   love.graphics.setColor(1, 1, 1)
-  boldPrint("行動結果", 50, 30)
-
-  love.graphics.setFont(smallFont)
-  local y = 100
-  for _, r in ipairs(lastActionResult) do
-    local text
-    if r.text then
-      text = r.label .. ": " .. r.text
-    else
-      text = r.label .. ": " .. (r.val >= 0 and "+" or "") .. r.val .. (r.suffix or "")
-    end
-    boldPrint(text, 70, y)
-    y = y + 30
-  end
-
-  love.graphics.setFont(tinyFont)
-  boldPrint("Press SPACE to continue", 50, 500)
+  boldPrint("↑↓: Select  SPACE: Execute", 50, 560)
 end
 
 function drawMonthEndScreen()
