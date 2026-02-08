@@ -51,340 +51,272 @@ function boldPrintf(text, x, y, limit, align)
   love.graphics.printf(text, x, y, limit, align)
 end
 
--- ===== state初期化 =====
+-- ===== 状態初期化 =====
 function initState()
   state = {
-    phase = "dev",           -- "dev" | "ops"
-    month = 1,               -- 1〜60
-
-    -- リソース（月初全回復）
+    phase = "dev",
+    month = 1,
+    money = 0,
     N = INITIAL_N,
     C = INITIAL_C,
     T = INITIAL_T,
     maxN = INITIAL_N,
     maxC = INITIAL_C,
     maxT = INITIAL_T,
-
-    -- 経済
-    money = 0,
-
-    -- 隠しパラメータ（非表示）
-    trend = 0,               -- 流行指数（-100〜+100）
-    decay = 0,               -- 時間減衰
-    momentum = 0,            -- 勢い
-
-    -- プレイヤーに見える評価
-    storeRating = 3,         -- ★1〜★5
-    trendLabel = "",         -- コメント表示
-
-    -- 月進行管理
-    currentMonthEvents = {}, -- 当月イベント4件
-    futureEvents = {},       -- 未来イベント3件
+    trend = 0,
+    decay = 0,
+    momentum = 0,
+    storeRating = 3,
+    trendLabel = "",
+    currentMonthEvents = {},
+    futureEvents = {},
     actionsRemaining = ACTIONS_PER_MONTH,
-    handledEvents = {},      -- 対応済みイベントID
-
-    -- アイテム
+    handledEvents = {},
     items = {},
   }
-
-  selectedIndex = 1
-  subState = "month_start"
-  lastActionResult = {}
-  monthEndReport = {}
 end
 
--- ===== イベント/行動定義 =====
-
--- イベント定義
+-- ===== イベント定義 =====
 local allEvents = {
-  -- 開発期プラスイベント
+  -- プラスイベント（開発期）
   {
-    id = "dev_media",
-    name = "メディア取材",
-    desc = "ゲーム雑誌から取材依頼",
+    id = "dev_plus_1",
+    name = "優秀な人材応募",
+    desc = "スキル高い人材が応募してきた",
     type = "plus",
     phase = "dev",
     costN = 5, costC = 0, costT = 0,
     apply = function(s)
       s.maxN = s.maxN + 2
+      s.maxC = s.maxC + 1
       return {
         { label = "知名度上限", val = 2 },
+        { label = "コンテンツ上限", val = 1 },
       }
     end,
   },
   {
-    id = "dev_creator",
-    name = "有名クリエイター参加",
-    desc = "著名クリエイターが協力を申し出た",
-    type = "plus",
-    phase = "dev",
-    costN = 3, costC = 5, costT = 0,
-    apply = function(s)
-      s.maxC = s.maxC + 3
-      s.maxN = s.maxN + 1
-      return {
-        { label = "コンテンツ上限", val = 3 },
-        { label = "知名度上限", val = 1 },
-      }
-    end,
-  },
-  {
-    id = "dev_smooth",
-    name = "開発順調",
-    desc = "予定より開発が順調に進んでいる",
+    id = "dev_plus_2",
+    name = "協力企業からの支援",
+    desc = "パートナー企業からリソース支援",
     type = "plus",
     phase = "dev",
     costN = 0, costC = 3, costT = 3,
     apply = function(s)
-      s.maxC = s.maxC + 1
-      s.maxT = s.maxT + 1
+      s.maxT = s.maxT + 3
+      s.money = s.money + 150
       return {
-        { label = "コンテンツ上限", val = 1 },
-        { label = "技術力上限", val = 1 },
+        { label = "技術力上限", val = 3 },
+        { label = "資金", val = 150, suffix = "万" },
       }
     end,
   },
   {
-    id = "dev_prototype",
-    name = "試遊会が好評",
-    desc = "内部試遊会で高評価",
+    id = "dev_plus_3",
+    name = "技術ブレイクスルー",
+    desc = "画期的な技術を発見",
     type = "plus",
     phase = "dev",
-    costN = 0, costC = 5, costT = 0,
+    costN = 0, costC = 0, costT = 8,
     apply = function(s)
+      s.maxT = s.maxT + 5
       s.maxC = s.maxC + 2
       return {
+        { label = "技術力上限", val = 5 },
         { label = "コンテンツ上限", val = 2 },
       }
     end,
   },
-  {
-    id = "dev_investment",
-    name = "追加投資",
-    desc = "投資家から追加資金を獲得",
-    type = "plus",
-    phase = "dev",
-    costN = 5, costC = 0, costT = 0,
-    apply = function(s)
-      s.money = s.money + 300
-      return {
-        { label = "資金", val = 300, suffix = "万" },
-      }
-    end,
-  },
 
-  -- 開発期マイナスイベント
+  -- マイナスイベント（開発期）
   {
-    id = "dev_bug",
-    name = "重大バグ発見",
-    desc = "深刻なバグが発覚した",
-    type = "minus",
-    phase = "dev",
-    costN = 0, costC = 0, costT = 8,
-    apply = function(s)
-      s.money = s.money - 100
-      return {
-        { label = "資金", val = -100, suffix = "万" },
-      }
-    end,
-  },
-  {
-    id = "dev_quit",
-    name = "スタッフ退職",
-    desc = "主要スタッフが退職した",
+    id = "dev_minus_1",
+    name = "主要スタッフ退職",
+    desc = "キーメンバーが退職を申し出た",
     type = "minus",
     phase = "dev",
     costN = 3, costC = 3, costT = 3,
     apply = function(s)
-      s.money = s.money - 150
+      s.maxN = s.maxN + 1
+      s.maxC = s.maxC + 1
+      s.maxT = s.maxT + 1
       return {
-        { label = "資金", val = -150, suffix = "万" },
+        { label = "全リソース上限", val = 1 },
+        { text = "引き留め成功" },
       }
     end,
   },
   {
-    id = "dev_spec_change",
-    name = "仕様変更",
-    desc = "大幅な仕様変更が必要に",
+    id = "dev_minus_2",
+    name = "開発機材トラブル",
+    desc = "重要な機材が故障した",
     type = "minus",
     phase = "dev",
-    costN = 0, costC = 10, costT = 5,
+    costN = 0, costC = 0, costT = 5,
     apply = function(s)
-      s.money = s.money - 200
+      s.maxT = s.maxT + 2
       return {
-        { label = "資金", val = -200, suffix = "万" },
-      }
-    end,
-  },
-  {
-    id = "dev_competitor",
-    name = "競合タイトル発表",
-    desc = "類似ゲームが先行発表された",
-    type = "minus",
-    phase = "dev",
-    costN = 8, costC = 0, costT = 0,
-    apply = function(s)
-      s.maxN = math.max(5, s.maxN - 2)
-      return {
-        { label = "知名度上限", val = -2 },
+        { label = "技術力上限", val = 2 },
+        { text = "復旧完了" },
       }
     end,
   },
 
-  -- 運営期プラスイベント
+  -- プラスイベント（運営期）
   {
-    id = "ops_viral",
-    name = "バズる",
-    desc = "SNSで大きな話題に",
+    id = "ops_plus_1",
+    name = "バズる投稿",
+    desc = "SNSで大きく話題になった",
     type = "plus",
     phase = "ops",
-    costN = 5, costC = 0, costT = 0,
+    costN = 8, costC = 0, costT = 0,
     apply = function(s)
       s.trend = s.trend + 15
-      s.maxN = s.maxN + 2
-      return {
-        { label = "流行", val = 15 },
-        { label = "知名度上限", val = 2 },
-      }
-    end,
-  },
-  {
-    id = "ops_collab",
-    name = "コラボ決定",
-    desc = "人気作品とのコラボが決定",
-    type = "plus",
-    phase = "ops",
-    costN = 8, costC = 5, costT = 0,
-    apply = function(s)
-      s.trend = s.trend + 20
-      s.maxC = s.maxC + 2
-      return {
-        { label = "流行", val = 20 },
-        { label = "コンテンツ上限", val = 2 },
-      }
-    end,
-  },
-  {
-    id = "ops_review",
-    name = "好意的レビュー",
-    desc = "有名レビューサイトで高評価",
-    type = "plus",
-    phase = "ops",
-    costN = 3, costC = 0, costT = 0,
-    apply = function(s)
-      s.trend = s.trend + 10
-      return {
-        { label = "流行", val = 10 },
-      }
-    end,
-  },
-  {
-    id = "ops_event_success",
-    name = "イベント盛況",
-    desc = "ゲーム内イベントが大成功",
-    type = "plus",
-    phase = "ops",
-    costN = 0, costC = 8, costT = 0,
-    apply = function(s)
-      s.trend = s.trend + 12
       s.money = s.money + 200
       return {
-        { label = "流行", val = 12 },
+        { label = "流行", val = 15 },
         { label = "資金", val = 200, suffix = "万" },
       }
     end,
   },
   {
-    id = "ops_popular_char",
-    name = "新キャラが人気",
-    desc = "新キャラクターが予想外のヒット",
+    id = "ops_plus_2",
+    name = "配信者が紹介",
+    desc = "有名配信者が好意的に紹介",
     type = "plus",
     phase = "ops",
-    costN = 0, costC = 5, costT = 0,
+    costN = 5, costC = 5, costT = 0,
     apply = function(s)
-      s.trend = s.trend + 8
-      s.money = s.money + 150
+      s.trend = s.trend + 10
+      s.maxN = s.maxN + 3
       return {
-        { label = "流行", val = 8 },
-        { label = "資金", val = 150, suffix = "万" },
+        { label = "流行", val = 10 },
+        { label = "知名度上限", val = 3 },
+      }
+    end,
+  },
+  {
+    id = "ops_plus_3",
+    name = "アワード受賞",
+    desc = "ゲームアワードで受賞",
+    type = "plus",
+    phase = "ops",
+    costN = 6, costC = 6, costT = 0,
+    apply = function(s)
+      s.trend = s.trend + 20
+      s.maxN = s.maxN + 4
+      s.money = s.money + 300
+      return {
+        { label = "流行", val = 20 },
+        { label = "知名度上限", val = 4 },
+        { label = "資金", val = 300, suffix = "万" },
+      }
+    end,
+  },
+  {
+    id = "ops_plus_4",
+    name = "大型アップデート成功",
+    desc = "新コンテンツが大好評",
+    type = "plus",
+    phase = "ops",
+    costN = 0, costC = 8, costT = 5,
+    apply = function(s)
+      s.trend = s.trend + 12
+      s.maxC = s.maxC + 3
+      s.money = s.money + 250
+      return {
+        { label = "流行", val = 12 },
+        { label = "コンテンツ上限", val = 3 },
+        { label = "資金", val = 250, suffix = "万" },
       }
     end,
   },
 
-  -- 運営期マイナスイベント
+  -- マイナスイベント（運営期）
   {
-    id = "ops_flame",
-    name = "炎上",
-    desc = "不適切な表現で炎上",
-    type = "minus",
-    phase = "ops",
-    costN = 10, costC = 5, costT = 0,
-    apply = function(s)
-      s.trend = s.trend - 25
-      s.money = s.money - 300
-      return {
-        { label = "流行", val = -25 },
-        { label = "資金", val = -300, suffix = "万" },
-      }
-    end,
-  },
-  {
-    id = "ops_major_bug",
-    name = "大型バグ発生",
-    desc = "進行不能バグが発生",
+    id = "ops_minus_1",
+    name = "重大バグ発生",
+    desc = "ゲームが起動しない不具合",
     type = "minus",
     phase = "ops",
     costN = 0, costC = 0, costT = 10,
     apply = function(s)
-      s.trend = s.trend - 15
-      s.money = s.money - 200
+      s.maxT = s.maxT + 4
+      s.trend = s.trend + 5
       return {
-        { label = "流行", val = -15 },
-        { label = "資金", val = -200, suffix = "万" },
+        { label = "技術力上限", val = 4 },
+        { label = "流行", val = 5 },
+        { text = "迅速対応で信頼回復" },
       }
     end,
   },
   {
-    id = "ops_server_down",
+    id = "ops_minus_2",
+    name = "炎上騒動",
+    desc = "SNSで炎上してしまった",
+    type = "minus",
+    phase = "ops",
+    costN = 10, costC = 0, costT = 0,
+    apply = function(s)
+      s.maxN = s.maxN + 3
+      s.trend = s.trend + 3
+      return {
+        { label = "知名度上限", val = 3 },
+        { label = "流行", val = 3 },
+        { text = "鎮火成功" },
+      }
+    end,
+  },
+  {
+    id = "ops_minus_3",
     name = "サーバーダウン",
-    desc = "サーバーが長時間停止",
+    desc = "アクセス集中でサーバー停止",
     type = "minus",
     phase = "ops",
     costN = 0, costC = 0, costT = 8,
     apply = function(s)
-      s.trend = s.trend - 10
-      s.money = s.money - 250
+      s.maxT = s.maxT + 5
+      s.money = s.money + 100
       return {
-        { label = "流行", val = -10 },
-        { label = "資金", val = -250, suffix = "万" },
+        { label = "技術力上限", val = 5 },
+        { label = "資金", val = 100, suffix = "万（補償）" },
+        { text = "復旧完了" },
       }
     end,
   },
   {
-    id = "ops_new_competitor",
-    name = "強力な競合出現",
-    desc = "大手が類似ゲームをリリース",
+    id = "ops_minus_4",
+    name = "ライバルゲーム登場",
+    desc = "強力な競合タイトルがリリース",
     type = "minus",
     phase = "ops",
-    costN = 5, costC = 5, costT = 0,
+    costN = 8, costC = 8, costT = 0,
     apply = function(s)
-      s.trend = s.trend - 20
+      s.trend = s.trend + 8
+      s.maxN = s.maxN + 2
+      s.maxC = s.maxC + 2
       return {
-        { label = "流行", val = -20 },
+        { label = "流行", val = 8 },
+        { label = "知名度上限", val = 2 },
+        { label = "コンテンツ上限", val = 2 },
+        { text = "差別化成功" },
       }
     end,
   },
   {
-    id = "ops_user_leave",
-    name = "ユーザー離反",
-    desc = "虚無期間でユーザーが離れる",
+    id = "ops_minus_5",
+    name = "虚無期間",
+    desc = "新コンテンツ不足で飽きられる",
     type = "minus",
     phase = "ops",
-    costN = 0, costC = 8, costT = 0,
+    costN = 0, costC = 10, costT = 0,
     apply = function(s)
-      s.trend = s.trend - 12
+      s.maxC = s.maxC + 5
+      s.trend = s.trend + 6
       return {
-        { label = "流行", val = -12 },
+        { label = "コンテンツ上限", val = 5 },
+        { label = "流行", val = 6 },
+        { text = "緊急イベント投入" },
       }
     end,
   },
@@ -398,9 +330,7 @@ local devActions = {
     costN = 5, costC = 0, costT = 0,
     apply = function(s)
       s.maxN = s.maxN + 1
-      return {
-        { label = "知名度上限", val = 1 },
-      }
+      return {{ label = "知名度上限", val = 1 }}
     end,
   },
   {
@@ -409,145 +339,477 @@ local devActions = {
     costN = 0, costC = 5, costT = 0,
     apply = function(s)
       s.maxC = s.maxC + 1
-      return {
-        { label = "コンテンツ上限", val = 1 },
-      }
+      return {{ label = "コンテンツ上限", val = 1 }}
     end,
   },
   {
     name = "技術開発",
-    desc = "システム基盤を強化",
+    desc = "システムやエンジンを改良",
     costN = 0, costC = 0, costT = 5,
     apply = function(s)
       s.maxT = s.maxT + 1
-      return {
-        { label = "技術力上限", val = 1 },
-      }
-    end,
-  },
-  {
-    name = "外注依頼",
-    desc = "外部リソースを活用",
-    costN = 2, costC = 3, costT = 2,
-    apply = function(s)
-      s.maxC = s.maxC + 2
-      s.money = s.money - 100
-      return {
-        { label = "コンテンツ上限", val = 2 },
-        { label = "資金", val = -100, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "市場調査",
-    desc = "ユーザーニーズを調査",
-    costN = 4, costC = 2, costT = 0,
-    apply = function(s)
-      s.maxN = s.maxN + 1
-      s.maxC = s.maxC + 1
-      return {
-        { label = "知名度上限", val = 1 },
-        { label = "コンテンツ上限", val = 1 },
-      }
-    end,
-  },
-  {
-    name = "テストプレイ",
-    desc = "内部テストでバグ修正",
-    costN = 0, costC = 3, costT = 4,
-    apply = function(s)
-      s.maxT = s.maxT + 2
-      return {
-        { label = "技術力上限", val = 2 },
-      }
+      return {{ label = "技術力上限", val = 1 }}
     end,
   },
   {
     name = "アイテム調達",
-    desc = "ランダムなアイテムを獲得",
+    desc = "有用なリソースを探す",
     costN = 3, costC = 3, costT = 3,
     apply = function(s)
       local item = generateItem()
       table.insert(s.items, item)
-      return {
-        { label = "獲得", val = 0, text = item.name .. "（" .. item.desc .. "）" },
-      }
+      return {{ label = "アイテム獲得", text = item.name }}
     end,
   },
 }
 
--- ===== アイテムシステム =====
-
--- アイテムテンプレート
+-- アイテムテンプレート（施策として再定義）
 local itemTemplates = {
+  -- 開発期専用施策（7種）
+  {
+    type = "beta_test",
+    namePattern = "βテスト実施",
+    minValue = 5,
+    maxValue = 10,
+    minValue2 = 3,
+    maxValue2 = 5,
+    phase = "dev",
+    descPattern = "βテスト実施（技術+%d/コンテンツ+%d）",
+  },
+  {
+    type = "preregist",
+    namePattern = "事前登録キャンペーン",
+    minValue = 8,
+    maxValue = 15,
+    phase = "dev",
+    descPattern = "事前登録キャンペーン（知名度+%d）",
+  },
+  {
+    type = "pv_creation",
+    namePattern = "PV制作",
+    minValue = 6,
+    maxValue = 12,
+    minValue2 = 2,
+    maxValue2 = 4,
+    phase = "dev",
+    descPattern = "PV制作（知名度+%d/コンテンツ+%d）",
+  },
+  {
+    type = "influencer_dev",
+    namePattern = "インフルエンサー契約",
+    minValue = 10,
+    maxValue = 18,
+    phase = "dev",
+    descPattern = "インフルエンサー契約（知名度+%d）",
+  },
+  {
+    type = "voice_recording",
+    namePattern = "ボイス収録",
+    minValue = 8,
+    maxValue = 15,
+    phase = "dev",
+    descPattern = "ボイス収録（コンテンツ+%d）",
+  },
+  {
+    type = "crowdfunding",
+    namePattern = "クラウドファンディング",
+    minValue = 200,
+    maxValue = 600,
+    minValue2 = 3,
+    maxValue2 = 6,
+    phase = "dev",
+    descPattern = "クラウドファンディング（資金+%d万/知名度+%d）",
+  },
+  {
+    type = "store_aso",
+    namePattern = "ストアページ最適化",
+    minValue = 4,
+    maxValue = 8,
+    phase = "dev",
+    descPattern = "ストアページ最適化（知名度+%d）",
+  },
+
+  -- 運営期専用施策（12種）
+  {
+    type = "limited_gacha",
+    namePattern = "限定ガチャ実装",
+    minValue = 8,
+    maxValue = 15,
+    minValue2 = 200,
+    maxValue2 = 400,
+    phase = "ops",
+    descPattern = "限定ガチャ実装（流行+%d/資金+%d万）",
+  },
+  {
+    type = "collab_event",
+    namePattern = "コラボイベント",
+    minValue = 15,
+    maxValue = 25,
+    minValue2 = 3,
+    maxValue2 = 8,
+    minValue3 = 100,
+    maxValue3 = 300,
+    phase = "ops",
+    descPattern = "コラボイベント（流行+%d/知名度+%d/資金+%d万）",
+  },
+  {
+    type = "tv_ad",
+    namePattern = "TV広告出稿",
+    minValue = 10,
+    maxValue = 20,
+    minValue2 = 5,
+    maxValue2 = 12,
+    minValue3 = -500,
+    maxValue3 = -300,
+    phase = "ops",
+    descPattern = "TV広告出稿（知名度+%d/流行+%d/資金%d万）",
+  },
+  {
+    type = "web_ad",
+    namePattern = "Web広告キャンペーン",
+    minValue = 5,
+    maxValue = 10,
+    minValue2 = 3,
+    maxValue2 = 8,
+    minValue3 = -200,
+    maxValue3 = -100,
+    phase = "ops",
+    descPattern = "Web広告キャンペーン（知名度+%d/流行+%d/資金%d万）",
+  },
+  {
+    type = "anniversary",
+    namePattern = "周年イベント",
+    minValue = 20,
+    maxValue = 35,
+    minValue2 = 300,
+    maxValue2 = 600,
+    phase = "ops",
+    descPattern = "周年イベント（流行+%d/資金+%d万）",
+  },
+  {
+    type = "new_character",
+    namePattern = "新キャラ追加",
+    minValue = 3,
+    maxValue = 8,
+    minValue2 = 5,
+    maxValue2 = 10,
+    minValue3 = 80,
+    maxValue3 = 150,
+    phase = "ops",
+    descPattern = "新キャラ追加（コンテンツ+%d/流行+%d/資金+%d万）",
+  },
+  {
+    type = "limited_event",
+    namePattern = "期間限定イベント",
+    minValue = 2,
+    maxValue = 5,
+    minValue2 = 8,
+    maxValue2 = 15,
+    minValue3 = 50,
+    maxValue3 = 120,
+    phase = "ops",
+    descPattern = "期間限定イベント（コンテンツ+%d/流行+%d/資金+%d万）",
+  },
+  {
+    type = "real_event",
+    namePattern = "リアルイベント開催",
+    minValue = 8,
+    maxValue = 15,
+    minValue2 = 10,
+    maxValue2 = 18,
+    minValue3 = -400,
+    maxValue3 = -200,
+    phase = "ops",
+    descPattern = "リアルイベント開催（知名度+%d/流行+%d/資金%d万）",
+  },
+  {
+    type = "influencer_ops",
+    namePattern = "インフルエンサー案件",
+    minValue = 6,
+    maxValue = 12,
+    minValue2 = 8,
+    maxValue2 = 15,
+    phase = "ops",
+    descPattern = "インフルエンサー案件（知名度+%d/流行+%d）",
+  },
+  {
+    type = "bug_fix_marathon",
+    namePattern = "バグ修正大会",
+    minValue = 5,
+    maxValue = 12,
+    minValue2 = 3,
+    maxValue2 = 8,
+    phase = "ops",
+    descPattern = "バグ修正大会（技術+%d/流行+%d）",
+  },
+  {
+    type = "gacha_pity",
+    namePattern = "ガチャ天井実装",
+    minValue = 10,
+    maxValue = 20,
+    minValue2 = 3,
+    maxValue2 = 6,
+    minValue3 = -150,
+    maxValue3 = -50,
+    phase = "ops",
+    descPattern = "ガチャ天井実装（流行+%d/技術+%d/資金%d万）",
+  },
+  {
+    type = "raid_boss",
+    namePattern = "レイドボス追加",
+    minValue = 4,
+    maxValue = 8,
+    minValue2 = 2,
+    maxValue2 = 5,
+    minValue3 = 6,
+    maxValue3 = 12,
+    phase = "ops",
+    descPattern = "レイドボス追加（コンテンツ+%d/技術+%d/流行+%d）",
+  },
+
+  -- 両フェーズ共通施策（4種）
   {
     type = "money",
     namePattern = "資金調達",
     minValue = 100,
     maxValue = 500,
-    descPattern = "資金+%d万",
+    phase = "both",
+    descPattern = "資金調達（資金+%d万）",
   },
   {
-    type = "resource_n",
-    namePattern = "PRキット",
-    minValue = 3,
-    maxValue = 8,
-    descPattern = "知名度上限+%d",
+    type = "hire_staff",
+    namePattern = "スタッフ増員",
+    minValue = 2,
+    maxValue = 5,
+    phase = "both",
+    descPattern = "スタッフ増員（全リソース+%d）",
   },
   {
-    type = "resource_c",
-    namePattern = "企画案",
-    minValue = 3,
-    maxValue = 8,
-    descPattern = "コンテンツ上限+%d",
-  },
-  {
-    type = "resource_t",
-    namePattern = "技術資料",
-    minValue = 3,
-    maxValue = 8,
-    descPattern = "技術力上限+%d",
-  },
-  {
-    type = "trend",
-    namePattern = "バズネタ",
+    type = "tech_infra",
+    namePattern = "技術基盤強化",
     minValue = 5,
-    maxValue = 20,
-    descPattern = "流行+%d",
+    maxValue = 12,
+    phase = "both",
+    descPattern = "技術基盤強化（技術+%d）",
+  },
+  {
+    type = "outsource",
+    namePattern = "外注リソース",
+    minValue = 5,
+    maxValue = 10,
+    minValue2 = -300,
+    maxValue2 = -100,
+    phase = "both",
+    descPattern = "外注リソース（コンテンツ+%d/資金%d万）",
   },
 }
 
--- アイテム生成
+-- アイテム生成（フェーズフィルタリング対応）
 function generateItem()
-  local template = itemTemplates[math.random(1, #itemTemplates)]
+  -- 現在のフェーズに適したテンプレートをフィルタリング
+  local eligibleTemplates = {}
+  for _, template in ipairs(itemTemplates) do
+    if template.phase == "both" or template.phase == state.phase then
+      table.insert(eligibleTemplates, template)
+    end
+  end
+
+  -- 適したテンプレートがない場合は汎用の資金調達
+  if #eligibleTemplates == 0 then
+    local value = math.random(100, 500)
+    return {
+      type = "money",
+      name = "資金調達",
+      value = value,
+      desc = string.format("資金+%d万", value),
+    }
+  end
+
+  -- ランダムにテンプレート選択
+  local template = eligibleTemplates[math.random(1, #eligibleTemplates)]
+
+  -- 複数値の生成
   local value = math.random(template.minValue, template.maxValue)
+  local value2 = nil
+  local value3 = nil
+
+  if template.minValue2 then
+    value2 = math.random(template.minValue2, template.maxValue2)
+  end
+  if template.minValue3 then
+    value3 = math.random(template.minValue3, template.maxValue3)
+  end
+
+  -- 説明文生成
+  local desc
+  if value3 then
+    desc = string.format(template.descPattern, value, value2, value3)
+  elseif value2 then
+    desc = string.format(template.descPattern, value, value2)
+  else
+    desc = string.format(template.descPattern, value)
+  end
+
   return {
     type = template.type,
     name = template.namePattern,
     value = value,
-    desc = string.format(template.descPattern, value),
+    value2 = value2,
+    value3 = value3,
+    desc = desc,
   }
 end
 
--- アイテム使用
+-- アイテム使用（25種類対応）
 function useItem(item)
   local result = {}
 
-  if item.type == "money" then
-    state.money = state.money + item.value
-    table.insert(result, { label = "資金", val = item.value, suffix = "万" })
-  elseif item.type == "resource_n" then
+  -- 開発期専用施策
+  if item.type == "beta_test" then
+    state.maxT = state.maxT + item.value
+    state.maxC = state.maxC + item.value2
+    table.insert(result, { label = "技術力上限", val = item.value })
+    table.insert(result, { label = "コンテンツ上限", val = item.value2 })
+
+  elseif item.type == "preregist" then
     state.maxN = state.maxN + item.value
     table.insert(result, { label = "知名度上限", val = item.value })
-  elseif item.type == "resource_c" then
+
+  elseif item.type == "pv_creation" then
+    state.maxN = state.maxN + item.value
+    state.maxC = state.maxC + item.value2
+    table.insert(result, { label = "知名度上限", val = item.value })
+    table.insert(result, { label = "コンテンツ上限", val = item.value2 })
+
+  elseif item.type == "influencer_dev" then
+    state.maxN = state.maxN + item.value
+    table.insert(result, { label = "知名度上限", val = item.value })
+
+  elseif item.type == "voice_recording" then
     state.maxC = state.maxC + item.value
     table.insert(result, { label = "コンテンツ上限", val = item.value })
-  elseif item.type == "resource_t" then
+
+  elseif item.type == "crowdfunding" then
+    state.money = state.money + item.value
+    state.maxN = state.maxN + item.value2
+    table.insert(result, { label = "資金", val = item.value, suffix = "万" })
+    table.insert(result, { label = "知名度上限", val = item.value2 })
+
+  elseif item.type == "store_aso" then
+    state.maxN = state.maxN + item.value
+    table.insert(result, { label = "知名度上限", val = item.value })
+
+  -- 運営期専用施策
+  elseif item.type == "limited_gacha" then
+    state.trend = state.trend + item.value
+    state.money = state.money + item.value2
+    table.insert(result, { label = "流行", val = item.value })
+    table.insert(result, { label = "資金", val = item.value2, suffix = "万" })
+
+  elseif item.type == "collab_event" then
+    state.trend = state.trend + item.value
+    state.maxN = state.maxN + item.value2
+    state.money = state.money + item.value3
+    table.insert(result, { label = "流行", val = item.value })
+    table.insert(result, { label = "知名度上限", val = item.value2 })
+    table.insert(result, { label = "資金", val = item.value3, suffix = "万" })
+
+  elseif item.type == "tv_ad" then
+    state.maxN = state.maxN + item.value
+    state.trend = state.trend + item.value2
+    state.money = state.money + item.value3  -- マイナス値
+    table.insert(result, { label = "知名度上限", val = item.value })
+    table.insert(result, { label = "流行", val = item.value2 })
+    table.insert(result, { label = "資金", val = item.value3, suffix = "万" })
+
+  elseif item.type == "web_ad" then
+    state.maxN = state.maxN + item.value
+    state.trend = state.trend + item.value2
+    state.money = state.money + item.value3  -- マイナス値
+    table.insert(result, { label = "知名度上限", val = item.value })
+    table.insert(result, { label = "流行", val = item.value2 })
+    table.insert(result, { label = "資金", val = item.value3, suffix = "万" })
+
+  elseif item.type == "anniversary" then
+    state.trend = state.trend + item.value
+    state.money = state.money + item.value2
+    table.insert(result, { label = "流行", val = item.value })
+    table.insert(result, { label = "資金", val = item.value2, suffix = "万" })
+
+  elseif item.type == "new_character" then
+    state.maxC = state.maxC + item.value
+    state.trend = state.trend + item.value2
+    state.money = state.money + item.value3
+    table.insert(result, { label = "コンテンツ上限", val = item.value })
+    table.insert(result, { label = "流行", val = item.value2 })
+    table.insert(result, { label = "資金", val = item.value3, suffix = "万" })
+
+  elseif item.type == "limited_event" then
+    state.maxC = state.maxC + item.value
+    state.trend = state.trend + item.value2
+    state.money = state.money + item.value3
+    table.insert(result, { label = "コンテンツ上限", val = item.value })
+    table.insert(result, { label = "流行", val = item.value2 })
+    table.insert(result, { label = "資金", val = item.value3, suffix = "万" })
+
+  elseif item.type == "real_event" then
+    state.maxN = state.maxN + item.value
+    state.trend = state.trend + item.value2
+    state.money = state.money + item.value3  -- マイナス値
+    table.insert(result, { label = "知名度上限", val = item.value })
+    table.insert(result, { label = "流行", val = item.value2 })
+    table.insert(result, { label = "資金", val = item.value3, suffix = "万" })
+
+  elseif item.type == "influencer_ops" then
+    state.maxN = state.maxN + item.value
+    state.trend = state.trend + item.value2
+    table.insert(result, { label = "知名度上限", val = item.value })
+    table.insert(result, { label = "流行", val = item.value2 })
+
+  elseif item.type == "bug_fix_marathon" then
+    state.maxT = state.maxT + item.value
+    state.trend = state.trend + item.value2
+    table.insert(result, { label = "技術力上限", val = item.value })
+    table.insert(result, { label = "流行", val = item.value2 })
+
+  elseif item.type == "gacha_pity" then
+    state.trend = state.trend + item.value
+    state.maxT = state.maxT + item.value2
+    state.money = state.money + item.value3  -- マイナス値
+    table.insert(result, { label = "流行", val = item.value })
+    table.insert(result, { label = "技術力上限", val = item.value2 })
+    table.insert(result, { label = "資金", val = item.value3, suffix = "万" })
+
+  elseif item.type == "raid_boss" then
+    state.maxC = state.maxC + item.value
+    state.maxT = state.maxT + item.value2
+    state.trend = state.trend + item.value3
+    table.insert(result, { label = "コンテンツ上限", val = item.value })
+    table.insert(result, { label = "技術力上限", val = item.value2 })
+    table.insert(result, { label = "流行", val = item.value3 })
+
+  -- 両フェーズ共通施策
+  elseif item.type == "money" then
+    state.money = state.money + item.value
+    table.insert(result, { label = "資金", val = item.value, suffix = "万" })
+
+  elseif item.type == "hire_staff" then
+    state.maxN = state.maxN + item.value
+    state.maxC = state.maxC + item.value
+    state.maxT = state.maxT + item.value
+    table.insert(result, { label = "知名度上限", val = item.value })
+    table.insert(result, { label = "コンテンツ上限", val = item.value })
+    table.insert(result, { label = "技術力上限", val = item.value })
+
+  elseif item.type == "tech_infra" then
     state.maxT = state.maxT + item.value
     table.insert(result, { label = "技術力上限", val = item.value })
-  elseif item.type == "trend" then
-    state.trend = state.trend + item.value
-    table.insert(result, { label = "流行", val = item.value })
+
+  elseif item.type == "outsource" then
+    state.maxC = state.maxC + item.value
+    state.money = state.money + item.value2  -- マイナス値
+    table.insert(result, { label = "コンテンツ上限", val = item.value })
+    table.insert(result, { label = "資金", val = item.value2, suffix = "万" })
   end
 
   return result
@@ -570,7 +832,7 @@ local opsActions = {
   },
   {
     name = "コンテンツ追加",
-    desc = "新規イベント・キャラ追加",
+    desc = "新しいゲーム内容を追加",
     costN = 0, costC = 5, costT = 0,
     apply = function(s)
       s.maxC = s.maxC + 1
@@ -583,83 +845,26 @@ local opsActions = {
   },
   {
     name = "技術改善",
-    desc = "バグ修正・パフォーマンス向上",
+    desc = "システムを最適化",
     costN = 0, costC = 0, costT = 5,
     apply = function(s)
       s.maxT = s.maxT + 1
-      return {
-        { label = "技術力上限", val = 1 },
-      }
-    end,
-  },
-  {
-    name = "キャンペーン開催",
-    desc = "ログインボーナス強化",
-    costN = 4, costC = 2, costT = 0,
-    apply = function(s)
-      s.trend = s.trend + 8
-      s.money = s.money - 100
-      return {
-        { label = "流行", val = 8 },
-        { label = "資金", val = -100, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "ガチャ追加",
-    desc = "新規ガチャをリリース",
-    costN = 3, costC = 4, costT = 2,
-    apply = function(s)
-      s.trend = s.trend + 6
-      s.money = s.money + 150
-      return {
-        { label = "流行", val = 6 },
-        { label = "資金", val = 150, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "イベント開催",
-    desc = "期間限定イベントを実施",
-    costN = 2, costC = 6, costT = 3,
-    apply = function(s)
-      s.maxC = s.maxC + 1
-      s.trend = s.trend + 7
-      return {
-        { label = "コンテンツ上限", val = 1 },
-        { label = "流行", val = 7 },
-      }
-    end,
-  },
-  {
-    name = "生放送配信",
-    desc = "公式生放送で情報発信",
-    costN = 6, costC = 2, costT = 0,
-    apply = function(s)
-      s.maxN = s.maxN + 1
-      s.trend = s.trend + 4
-      return {
-        { label = "知名度上限", val = 1 },
-        { label = "流行", val = 4 },
-      }
+      return {{ label = "技術力上限", val = 1 }}
     end,
   },
   {
     name = "アイテム調達",
-    desc = "ランダムなアイテムを獲得",
+    desc = "有用なリソースを探す",
     costN = 3, costC = 3, costT = 3,
     apply = function(s)
       local item = generateItem()
       table.insert(s.items, item)
-      return {
-        { label = "獲得", val = 0, text = item.name .. "（" .. item.desc .. "）" },
-      }
+      return {{ label = "アイテム獲得", text = item.name }}
     end,
   },
 }
 
--- ===== 月進行ロジック =====
-
+-- 月初処理
 function processMonthStart()
   -- N/C/T全回復
   state.N = state.maxN
@@ -739,82 +944,56 @@ end
 function processMonthEnd()
   monthEndReport = {}
 
-  -- 未対応イベントのペナルティ
+  -- 未対応マイナスイベントへのペナルティ
+  local unhandledMinusCount = 0
   for _, evt in ipairs(state.currentMonthEvents) do
-    local handled = false
-    for _, id in ipairs(state.handledEvents) do
-      if id == evt.id then
-        handled = true
-        break
+    if evt.type == "minus" then
+      local handled = false
+      for _, id in ipairs(state.handledEvents) do
+        if id == evt.id then
+          handled = true
+          break
+        end
       end
-    end
-    if not handled and evt.type == "minus" then
-      state.money = state.money - 100
-      table.insert(monthEndReport, { label = evt.name .. "放置", val = -100, suffix = "万" })
+      if not handled then
+        unhandledMinusCount = unhandledMinusCount + 1
+      end
     end
   end
 
-  -- 運営期の収益計算
+  if unhandledMinusCount > 0 then
+    local penalty = unhandledMinusCount * 100
+    state.money = state.money - penalty
+    table.insert(monthEndReport, { label = "未対応ペナルティ", val = -penalty, suffix = "万" })
+  end
+
+  -- 運営期の月次収支
   if state.phase == "ops" then
-    -- 時間減衰計算（月経過で加速）
-    local opsMonth = state.month - DEV_MONTHS
-    local baseDecay = 1.0
-    local decayAccel = opsMonth * 0.01  -- 月ごとに1%悪化
-    state.decay = baseDecay - decayAccel
-
-    -- 流行が高いほど減衰を緩和
-    if state.trend > 50 then
-      state.decay = state.decay + 0.2
-    elseif state.trend > 20 then
-      state.decay = state.decay + 0.1
-    elseif state.trend < -20 then
-      state.decay = state.decay - 0.1
-    end
-    state.decay = math.max(0.3, math.min(1.0, state.decay))
-
-    -- 流行補正（-100〜+100 → 0.5〜1.5）
-    local trendBonus = 1.0 + (state.trend / 200)
-    trendBonus = math.max(0.5, math.min(1.5, trendBonus))
-
-    -- 勢い計算
-    state.momentum = (state.maxN + state.maxC) * trendBonus * state.decay
-
-    -- 課金率（技術力が影響）
-    local chargeRate = 0.15 + (state.maxT * 0.002)
-    chargeRate = math.min(0.3, chargeRate)
-
     -- 収益計算
-    local revenue = math.floor(state.momentum * chargeRate * 100)
+    local revenue = (state.maxN + state.maxC) * 10 + state.trend * 5
     state.money = state.money + revenue
     table.insert(monthEndReport, { label = "収益", val = revenue, suffix = "万" })
 
-    -- 維持費（ユーザー規模に応じて変動）
-    local baseCost = 150
-    local scaleCost = math.floor(state.momentum * 0.5)
-    local cost = baseCost + scaleCost
-    state.money = state.money - cost
-    table.insert(monthEndReport, { label = "維持費", val = -cost, suffix = "万" })
-  end
+    -- 維持費
+    local maintenance = 200
+    state.money = state.money - maintenance
+    table.insert(monthEndReport, { label = "維持費", val = -maintenance, suffix = "万" })
 
-  -- 流行減衰（月経過で加速）
-  if state.phase == "ops" then
-    local opsMonth = state.month - DEV_MONTHS
-    local trendDecay = 2 + math.floor(opsMonth / 6)  -- 6ヶ月ごとに+1
-    state.trend = math.max(-100, state.trend - trendDecay)
-  end
+    -- 流行の時間減衰
+    state.trend = state.trend - 2
+    table.insert(monthEndReport, { label = "流行減衰", val = -2 })
 
-  -- ストア評価更新（仮）
-  if state.phase == "ops" then
-    if state.trend > 50 then
+    -- ストア評価更新
+    if state.trend >= 40 then
       state.storeRating = 5
       state.trendLabel = "SNSで話題"
-    elseif state.trend > 20 then
+    elseif state.trend >= 20 then
       state.storeRating = 4
       state.trendLabel = "堅調"
-    elseif state.trend > -20 then
+    elseif state.trend >= 0 then
       state.storeRating = 3
-      state.trendLabel = "普通"
-    elseif state.trend > -50 then
+      state.trendLabel = "まあまあ"
+    elseif state.trend >= -20 then
       state.storeRating = 2
       state.trendLabel = "新規流入が鈍化"
     else
@@ -822,6 +1001,8 @@ function processMonthEnd()
       state.trendLabel = "やや過疎"
     end
   end
+
+  table.insert(monthEndReport, { label = "最終資金", val = state.money, suffix = "万" })
 end
 
 function advanceMonth()
@@ -849,75 +1030,53 @@ function advanceMonth()
   processMonthStart()
 end
 
--- リリース処理
 function executeRelease()
-  -- 流行指数決定
+  state.phase = "ops"
+  -- 流行指数を決定
   state.trend = state.maxN + state.maxC + math.random(-20, 20)
-  state.trend = math.max(-100, math.min(100, state.trend))
-
   -- 初期資金
   state.money = 5000
+end
 
-  -- フェーズ移行
-  state.phase = "ops"
+-- イベント処理
+function handleEvent(evt)
+  state.N = state.N - evt.costN
+  state.C = state.C - evt.costC
+  state.T = state.T - evt.costT
 
-  return {
-    trend = state.trend,
-    money = state.money,
-  }
+  local result = evt.apply(state)
+
+  table.insert(state.handledEvents, evt.id)
+  state.actionsRemaining = state.actionsRemaining - 1
+
+  return result
 end
 
 -- 行動実行
-function canAffordAction(action)
-  return state.N >= action.costN and state.C >= action.costC and state.T >= action.costT
-end
-
 function executeAction(action)
-  -- コスト消費
   state.N = state.N - action.costN
   state.C = state.C - action.costC
   state.T = state.T - action.costT
 
-  -- 効果適用
   local result = action.apply(state)
 
-  -- 行動回数減少
   state.actionsRemaining = state.actionsRemaining - 1
 
   return result
 end
 
-function handleEvent(event)
-  -- コスト消費
-  state.N = state.N - event.costN
-  state.C = state.C - event.costC
-  state.T = state.T - event.costT
-
-  -- 効果適用
-  local result = event.apply(state)
-
-  -- 対応済み記録
-  table.insert(state.handledEvents, event.id)
-
-  -- 行動回数減少
-  state.actionsRemaining = state.actionsRemaining - 1
-
-  return result
+-- リソースコスト判定
+function canAffordAction(action)
+  return state.N >= action.costN and state.C >= action.costC and state.T >= action.costT
 end
 
 -- ===== LÖVE callbacks =====
 
 function love.load()
-  love.window.setTitle("ソシャゲ運営シミュレーション v5")
-  love.window.setMode(800, 600, { resizable = true })
-
-  -- フォント読み込み
   titleFont = love.graphics.newFont(FONT_PATH, 32)
   menuFont = love.graphics.newFont(FONT_PATH, 22)
   smallFont = love.graphics.newFont(FONT_PATH, 16)
   tinyFont = love.graphics.newFont(FONT_PATH, 13)
-
-  math.randomseed(os.time())
   initState()
 end
 
@@ -1026,7 +1185,6 @@ function love.keypressed(key)
 end
 
 function love.update(dt)
-  -- 必要に応じて更新処理
 end
 
 function love.draw()
@@ -1074,7 +1232,9 @@ function drawTitleScreen()
   boldPrintf("ソシャゲ運営シミュレーション v5", 0, 200, BASE_W, "center")
 
   love.graphics.setFont(smallFont)
-  boldPrintf("Press SPACE to Start", 0, 350, BASE_W, "center")
+  boldPrintf("Space / Enter: Start", 0, 300, BASE_W, "center")
+  boldPrintf("F11: Toggle Fullscreen", 0, 330, BASE_W, "center")
+  boldPrintf("ESC: Quit", 0, 360, BASE_W, "center")
 end
 
 function drawActionSelectScreen()
@@ -1209,7 +1369,7 @@ end
 function drawMonthEndScreen()
   love.graphics.setFont(menuFont)
   love.graphics.setColor(1, 1, 1)
-  boldPrint("月末レポート - " .. state.month .. "ヶ月目", 50, 30)
+  boldPrint(state.month .. "ヶ月目 - 月末レポート", 50, 30)
 
   love.graphics.setFont(smallFont)
   local y = 100
@@ -1219,53 +1379,52 @@ function drawMonthEndScreen()
     y = y + 30
   end
 
-  boldPrint("資金: " .. state.money .. "万円", 70, y + 20)
-
   if state.phase == "ops" then
-    boldPrint("ストア評価: " .. string.rep("★", state.storeRating) .. string.rep("☆", 5 - state.storeRating), 70, y + 50)
-    boldPrint("状況: " .. state.trendLabel, 70, y + 80)
+    y = y + 20
+    love.graphics.setColor(1, 1, 1)
+    boldPrint("ストア評価: " .. string.rep("★", state.storeRating) .. string.rep("☆", 5 - state.storeRating), 70, y)
+    y = y + 30
+    boldPrint("状況: " .. state.trendLabel, 70, y)
   end
 
+  love.graphics.setColor(1, 1, 1)
   love.graphics.setFont(tinyFont)
   boldPrint("Press SPACE to continue", 50, 500)
 end
 
 function drawReleaseScreen()
-  love.graphics.setFont(titleFont)
-  love.graphics.setColor(1, 1, 0)
-  boldPrintf("リリース！", 0, 200, BASE_W, "center")
+  love.graphics.setFont(menuFont)
+  love.graphics.setColor(1, 1, 1)
+  boldPrint("リリース！", 50, 100)
 
   love.graphics.setFont(smallFont)
-  love.graphics.setColor(1, 1, 1)
-  boldPrintf("24ヶ月の開発期間が終了しました", 0, 280, BASE_W, "center")
-  boldPrintf("これから運営期に入ります", 0, 310, BASE_W, "center")
+  boldPrint("開発期が終了しました。", 50, 180)
+  boldPrint("これから運営期に入ります。", 50, 220)
 
   love.graphics.setFont(tinyFont)
   boldPrint("Press SPACE to continue", 50, 500)
 end
 
 function drawFinalScreen()
-  love.graphics.setFont(titleFont)
-  love.graphics.setColor(1, 1, 0)
-  boldPrintf("60ヶ月完走！", 0, 200, BASE_W, "center")
+  love.graphics.setFont(menuFont)
+  love.graphics.setColor(1, 1, 1)
+  boldPrint("60ヶ月完走！", 50, 100)
 
   love.graphics.setFont(smallFont)
-  love.graphics.setColor(1, 1, 1)
-  boldPrintf("最終資金: " .. state.money .. "万円", 0, 280, BASE_W, "center")
+  boldPrint("最終資金: " .. state.money .. "万円", 50, 180)
 
   love.graphics.setFont(tinyFont)
-  boldPrint("Press ESC to return to title", 50, 500)
+  boldPrint("ESC: Return to Title", 50, 500)
 end
 
 function drawGameOverScreen()
-  love.graphics.setFont(titleFont)
-  love.graphics.setColor(1, 0.3, 0.3)
-  boldPrintf("サービス終了", 0, 200, BASE_W, "center")
+  love.graphics.setFont(menuFont)
+  love.graphics.setColor(1, 1, 1)
+  boldPrint("サービス終了", 50, 100)
 
   love.graphics.setFont(smallFont)
-  love.graphics.setColor(1, 1, 1)
-  boldPrintf(state.month .. "ヶ月目で資金が尽きました", 0, 280, BASE_W, "center")
+  boldPrint("資金が尽きました。", 50, 180)
 
   love.graphics.setFont(tinyFont)
-  boldPrint("Press ESC to return to title", 50, 500)
+  boldPrint("ESC: Return to Title", 50, 500)
 end
