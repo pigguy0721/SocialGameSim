@@ -70,7 +70,7 @@ function initState()
   state = {
     phase = "dev",
     month = 1,
-    money = -2000,  -- 初期借金2000万円
+    money = -2000,  -- 初期借金
     N = INITIAL_N,
     C = INITIAL_C,
     T = INITIAL_T,
@@ -88,6 +88,7 @@ function initState()
     actionsRemaining = ACTIONS_PER_MONTH,
     handledEvents = {},
     items = {},
+    recurringRevenue = 0,  -- 恒常収益（毎月発生）
     goals = {
       debtCleared = false,    -- 運営1周年（24ヶ月）で借金完済
       reachedRank1 = false,   -- 運営3周年（48ヶ月）でセルラン1位
@@ -457,28 +458,30 @@ local itemTemplates = {
   },
 
   -- 運営期専用施策（12種）
-  {
-    type = "limited_gacha",
-    namePattern = "限定ガチャ実装",
-    minValue = 8,
-    maxValue = 15,
-    minValue2 = 200,
-    maxValue2 = 400,
-    phase = "ops",
-    descPattern = "限定ガチャ実装（流行+%d/資金+%d万）",
-  },
-  {
-    type = "collab_event",
-    namePattern = "コラボイベント",
-    minValue = 15,
-    maxValue = 25,
-    minValue2 = 3,
-    maxValue2 = 8,
-    minValue3 = 100,
-    maxValue3 = 300,
-    phase = "ops",
-    descPattern = "コラボイベント（流行+%d/知名度+%d/資金+%d万）",
-  },
+  -- 注：limited_gachaは新システムで実装されるため削除
+  --{
+  --  type = "limited_gacha",
+  --  namePattern = "限定ガチャ実装",
+  --  minValue = 8,
+  --  maxValue = 15,
+  --  minValue2 = 200,
+  --  maxValue2 = 400,
+  --  phase = "ops",
+  --  descPattern = "限定ガチャ実装（流行+%d/資金+%d万）",
+  --},
+  -- 収益系アイテムは新システムで実装
+  --{
+  --  type = "collab_event",
+  --  namePattern = "コラボイベント",
+  --  minValue = 15,
+  --  maxValue = 25,
+  --  minValue2 = 3,
+  --  maxValue2 = 8,
+  --  minValue3 = 100,
+  --  maxValue3 = 300,
+  --  phase = "ops",
+  --  descPattern = "コラボイベント（流行+%d/知名度+%d/資金+%d万）",
+  --},
   {
     type = "tv_ad",
     namePattern = "TV広告出稿",
@@ -503,40 +506,40 @@ local itemTemplates = {
     phase = "ops",
     descPattern = "Web広告キャンペーン（知名度+%d/流行+%d/資金%d万）",
   },
-  {
-    type = "anniversary",
-    namePattern = "周年イベント",
-    minValue = 20,
-    maxValue = 35,
-    minValue2 = 300,
-    maxValue2 = 600,
-    phase = "ops",
-    descPattern = "周年イベント（流行+%d/資金+%d万）",
-  },
-  {
-    type = "new_character",
-    namePattern = "新キャラ追加",
-    minValue = 3,
-    maxValue = 8,
-    minValue2 = 5,
-    maxValue2 = 10,
-    minValue3 = 80,
-    maxValue3 = 150,
-    phase = "ops",
-    descPattern = "新キャラ追加（コンテンツ+%d/流行+%d/資金+%d万）",
-  },
-  {
-    type = "limited_event",
-    namePattern = "期間限定イベント",
-    minValue = 2,
-    maxValue = 5,
-    minValue2 = 8,
-    maxValue2 = 15,
-    minValue3 = 50,
-    maxValue3 = 120,
-    phase = "ops",
-    descPattern = "期間限定イベント（コンテンツ+%d/流行+%d/資金+%d万）",
-  },
+  --{
+  --  type = "anniversary",
+  --  namePattern = "周年イベント",
+  --  minValue = 20,
+  --  maxValue = 35,
+  --  minValue2 = 300,
+  --  maxValue2 = 600,
+  --  phase = "ops",
+  --  descPattern = "周年イベント（流行+%d/資金+%d万）",
+  --},
+  --{
+  --  type = "new_character",
+  --  namePattern = "新キャラ追加",
+  --  minValue = 3,
+  --  maxValue = 8,
+  --  minValue2 = 5,
+  --  maxValue2 = 10,
+  --  minValue3 = 80,
+  --  maxValue3 = 150,
+  --  phase = "ops",
+  --  descPattern = "新キャラ追加（コンテンツ+%d/流行+%d/資金+%d万）",
+  --},
+  --{
+  --  type = "limited_event",
+  --  namePattern = "期間限定イベント",
+  --  minValue = 2,
+  --  maxValue = 5,
+  --  minValue2 = 8,
+  --  maxValue2 = 15,
+  --  minValue3 = 50,
+  --  maxValue3 = 120,
+  --  phase = "ops",
+  --  descPattern = "期間限定イベント（コンテンツ+%d/流行+%d/資金+%d万）",
+  --},
   {
     type = "real_event",
     namePattern = "リアルイベント開催",
@@ -685,6 +688,66 @@ function generateItem()
     value3 = value3,
     desc = desc,
   }
+end
+
+-- コンテンツアイテム生成（恒常 or 限定）
+function generateContentItem()
+  local isPermanent = math.random() < 0.5  -- 50%の確率で恒常
+
+  if isPermanent then
+    -- 恒常コンテンツ：毎月安定収益（小額）
+    local revenue = math.random(30, 60)  -- 30-60万/月
+    local trend = math.random(3, 8)
+    return {
+      type = "permanent_content",
+      name = "恒常コンテンツ",
+      revenue = revenue,
+      trend = trend,
+      desc = string.format("恒常コンテンツ（収益+%d万/月・流行+%d）", revenue, trend),
+    }
+  else
+    -- 限定コンテンツ：当月のみ大きな収益
+    local revenue = math.random(300, 600)  -- 300-600万（恒常の10倍程度）
+    local trend = math.random(15, 30)
+    return {
+      type = "limited_content",
+      name = "限定コンテンツ",
+      revenue = revenue,
+      trend = trend,
+      desc = string.format("限定コンテンツ（収益+%d万・流行+%d）", revenue, trend),
+    }
+  end
+end
+
+-- ガチャアイテム生成（恒常 or 限定）
+function generateGachaItem()
+  local isPermanent = math.random() < 0.5  -- 50%の確率で恒常
+
+  if isPermanent then
+    -- 恒常ガチャ：毎月変動収益（小額、±30%）
+    local baseRevenue = math.random(40, 80)  -- 40-80万/月ベース
+    local trend = math.random(5, 12)
+    return {
+      type = "permanent_gacha",
+      name = "恒常ガチャ",
+      baseRevenue = baseRevenue,
+      trend = trend,
+      desc = string.format("恒常ガチャ（収益+%d万/月±30%%・流行+%d）", baseRevenue, trend),
+    }
+  else
+    -- 限定ガチャ：当月のみ大きな変動収益、流行減少
+    local baseRevenue = math.random(500, 1000)  -- 500-1000万ベース
+    local variance = 0.4  -- ±40%
+    local actualRevenue = math.floor(baseRevenue * (1 + (math.random() * 2 - 1) * variance))
+    local trendLoss = math.random(-20, -10)
+    return {
+      type = "limited_gacha",
+      name = "限定ガチャ",
+      revenue = actualRevenue,
+      trend = trendLoss,
+      desc = string.format("限定ガチャ（収益+%d万・流行%d）", actualRevenue, trendLoss),
+    }
+  end
 end
 
 -- アイテム使用（25種類対応）
@@ -837,6 +900,37 @@ function useItem(item)
     state.money = state.money + item.value2  -- マイナス値
     table.insert(result, { label = "コンテンツ上限", val = item.value })
     table.insert(result, { label = "資金", val = item.value2, suffix = "万" })
+
+  -- 新規収益システム
+  elseif item.type == "permanent_content" then
+    -- 恒常コンテンツ：毎月安定収益
+    state.recurringRevenue = state.recurringRevenue + item.revenue
+    state.trend = state.trend + item.trend
+    table.insert(result, { label = "恒常収益", val = item.revenue, suffix = "万/月" })
+    table.insert(result, { label = "流行", val = item.trend })
+
+  elseif item.type == "limited_content" then
+    -- 限定コンテンツ：当月のみ大きな収益
+    state.money = state.money + item.revenue
+    state.trend = state.trend + item.trend
+    table.insert(result, { label = "資金", val = item.revenue, suffix = "万" })
+    table.insert(result, { label = "流行", val = item.trend })
+
+  elseif item.type == "permanent_gacha" then
+    -- 恒常ガチャ：毎月変動収益（±30%）
+    local variance = 0.3
+    local actualRevenue = math.floor(item.baseRevenue * (1 + (math.random() * 2 - 1) * variance))
+    state.recurringRevenue = state.recurringRevenue + actualRevenue
+    state.trend = state.trend + item.trend
+    table.insert(result, { label = "恒常収益", val = actualRevenue, suffix = "万/月±30%" })
+    table.insert(result, { label = "流行", val = item.trend })
+
+  elseif item.type == "limited_gacha" then
+    -- 限定ガチャ：当月のみ大きな収益、流行減少
+    state.money = state.money + item.revenue
+    state.trend = state.trend + item.trend
+    table.insert(result, { label = "資金", val = item.revenue, suffix = "万" })
+    table.insert(result, { label = "流行", val = item.trend })
   end
 
   return result
@@ -887,6 +981,26 @@ local opsActions = {
       local item = generateItem()
       table.insert(s.items, item)
       return {{ label = "アイテム獲得", text = item.name }}
+    end,
+  },
+  {
+    name = "コンテンツ実装",
+    desc = "恒常または限定コンテンツを実装",
+    costN = 0, costC = 8, costT = 2,
+    apply = function(s)
+      local item = generateContentItem()
+      table.insert(s.items, item)
+      return {{ label = "コンテンツ獲得", text = item.name }}
+    end,
+  },
+  {
+    name = "ガチャ実装",
+    desc = "恒常または限定ガチャを実装",
+    costN = 2, costC = 5, costT = 5,
+    apply = function(s)
+      local item = generateGachaItem()
+      table.insert(s.items, item)
+      return {{ label = "ガチャ獲得", text = item.name }}
     end,
   },
   {
@@ -1032,8 +1146,13 @@ function processMonthEndLogic()
 
   -- 運営期のみ：収益・維持費・減衰
   if state.phase == "ops" then
-    local revenue = (state.maxN + state.maxC) * 10 + state.trend * 5
-    state.money = state.money + revenue - 200  -- 維持費200万円
+    -- 恒常収益（毎月発生）
+    state.money = state.money + state.recurringRevenue
+
+    -- 維持費（運営期のみ）
+    state.money = state.money - 200
+
+    -- 流行減衰
     state.trend = state.trend + autoplayTrendDecay  -- 設定可能な減衰率
 
     -- ストア評価更新
@@ -1324,19 +1443,20 @@ function processMonthEnd()
 
   -- 運営期の月次収支
   if state.phase == "ops" then
-    -- 収益計算
-    local revenue = (state.maxN + state.maxC) * 10 + state.trend * 5
-    state.money = state.money + revenue
-    table.insert(monthEndReport, { label = "収益", val = revenue, suffix = "万" })
+    -- 恒常収益（毎月発生）
+    if state.recurringRevenue > 0 then
+      state.money = state.money + state.recurringRevenue
+      table.insert(monthEndReport, { label = "恒常収益", val = state.recurringRevenue, suffix = "万" })
+    end
 
-    -- 維持費
+    -- 維持費（運営期のみ）
     local maintenance = 200
     state.money = state.money - maintenance
     table.insert(monthEndReport, { label = "維持費", val = -maintenance, suffix = "万" })
 
-    -- 流行の時間減衰
-    state.trend = state.trend - 2
-    table.insert(monthEndReport, { label = "流行減衰", val = -2 })
+    -- 流行の時間減衰（設定可能）
+    state.trend = state.trend + autoplayTrendDecay
+    table.insert(monthEndReport, { label = "流行減衰", val = autoplayTrendDecay })
 
     -- ストア評価更新
     if state.trend >= 40 then
@@ -1480,13 +1600,18 @@ function love.keypressed(key)
 
   if gameState == "title" then
     if key == "space" or key == "return" or key == "1" then
+      autoplayCurrentRun = 0  -- オートプレイ状態をリセット
+      initState()  -- ゲーム状態を初期化
       gameState = "game"
       processMonthStart()
     elseif key == "2" then
+      autoplayCurrentRun = 0  -- オートプレイ状態をリセット
+      initState()  -- ゲーム状態を初期化
       gameState = "autoplay_menu"
       autoplayInputBuffer = ""
+    elseif key == "3" then
+      gameState = "settings"
       autoplayDecayInputBuffer = ""
-      autoplayInputField = "count"
     end
   elseif gameState == "game" then
     if subState == "action_select" then
@@ -1572,49 +1697,50 @@ function love.keypressed(key)
   elseif gameState == "autoplay_menu" then
     if key == "escape" then
       gameState = "title"
-    elseif key == "tab" or key == "down" then
-      -- フィールド切り替え
-      autoplayInputField = autoplayInputField == "count" and "decay" or "count"
-    elseif key == "up" then
-      -- フィールド切り替え（逆方向）
-      autoplayInputField = autoplayInputField == "decay" and "count" or "decay"
     elseif key == "return" or key == "space" then
       -- 実行開始
       local count = tonumber(autoplayInputBuffer)
       if count == nil or count < 1 then count = 100 end  -- デフォルト100
       if count > 10000 then count = 10000 end
 
-      local decay = tonumber(autoplayDecayInputBuffer)
-      if decay == nil then decay = -2 end  -- デフォルト-2
-
-      autoplayTrendDecay = decay
       startAutoplay(count)
     elseif key == "backspace" then
-      -- 現在のフィールドの入力を削除
-      if autoplayInputField == "count" then
-        autoplayInputBuffer = string.sub(autoplayInputBuffer, 1, -2)
-      else
-        autoplayDecayInputBuffer = string.sub(autoplayDecayInputBuffer, 1, -2)
+      autoplayInputBuffer = string.sub(autoplayInputBuffer, 1, -2)
+    else
+      -- 数字入力
+      local num = tonumber(key)
+      if num and #autoplayInputBuffer < 5 then
+        autoplayInputBuffer = autoplayInputBuffer .. key
       end
+    end
+  elseif gameState == "settings" then
+    if key == "escape" then
+      gameState = "title"
+    elseif key == "return" or key == "space" then
+      -- 設定を保存
+      local decay = tonumber(autoplayDecayInputBuffer)
+      if decay then
+        autoplayTrendDecay = decay
+      end
+      gameState = "title"
+    elseif key == "backspace" then
+      autoplayDecayInputBuffer = string.sub(autoplayDecayInputBuffer, 1, -2)
     elseif key == "-" or key == "kp-" then
-      -- マイナス記号（減衰率フィールドのみ、先頭のみ）
-      if autoplayInputField == "decay" and #autoplayDecayInputBuffer == 0 then
+      -- マイナス記号（先頭のみ）
+      if #autoplayDecayInputBuffer == 0 then
         autoplayDecayInputBuffer = "-"
       end
     else
       -- 数字入力
       local num = tonumber(key)
-      if num then
-        if autoplayInputField == "count" and #autoplayInputBuffer < 5 then
-          autoplayInputBuffer = autoplayInputBuffer .. key
-        elseif autoplayInputField == "decay" and #autoplayDecayInputBuffer < 4 then
-          autoplayDecayInputBuffer = autoplayDecayInputBuffer .. key
-        end
+      if num and #autoplayDecayInputBuffer < 4 then
+        autoplayDecayInputBuffer = autoplayDecayInputBuffer .. key
       end
     end
   elseif gameState == "autoplay_result" then
     if key == "space" or key == "return" or key == "escape" then
       gameState = "title"
+      autoplayCurrentRun = 0  -- オートプレイ状態をリセット
     end
   end
 end
@@ -1641,6 +1767,8 @@ function love.draw()
 
   if gameState == "title" then
     drawTitleScreen()
+  elseif gameState == "settings" then
+    drawSettingsScreen()
   elseif gameState == "autoplay_menu" then
     drawAutoplayMenuScreen()
   elseif gameState == "game" then
@@ -1675,77 +1803,84 @@ end
 function drawTitleScreen()
   love.graphics.setFont(titleFont)
   love.graphics.setColor(1, 1, 1)
-  boldPrintf("ソシャゲ運営シミュレーション v5", 0, 200, BASE_W, "center")
+  boldPrintf("ソシャゲ運営シミュレーション v5", 0, 180, BASE_W, "center")
 
   love.graphics.setFont(smallFont)
-  boldPrintf("1: ゲーム開始", 0, 300, BASE_W, "center")
-  boldPrintf("2: オートプレイモード", 0, 330, BASE_W, "center")
-  boldPrintf("F11: Toggle Fullscreen", 0, 360, BASE_W, "center")
-  boldPrintf("ESC: Quit", 0, 390, BASE_W, "center")
+  boldPrintf("1: ゲーム開始", 0, 280, BASE_W, "center")
+  boldPrintf("2: オートプレイモード", 0, 310, BASE_W, "center")
+  boldPrintf("3: ゲーム設定", 0, 340, BASE_W, "center")
+
+  -- 現在の設定を表示
+  love.graphics.setColor(0.7, 0.7, 0.7)
+  love.graphics.setFont(tinyFont)
+  boldPrintf("現在の設定: 流行減衰率 = " .. autoplayTrendDecay .. "/月", 0, 400, BASE_W, "center")
+
+  love.graphics.setColor(1, 1, 1)
+  love.graphics.setFont(smallFont)
+  boldPrintf("F11: Toggle Fullscreen", 0, 450, BASE_W, "center")
+  boldPrintf("ESC: Quit", 0, 480, BASE_W, "center")
+end
+
+function drawSettingsScreen()
+  love.graphics.setFont(titleFont)
+  love.graphics.setColor(1, 1, 1)
+  boldPrintf("ゲーム設定", 0, 100, BASE_W, "center")
+
+  love.graphics.setFont(menuFont)
+  love.graphics.setColor(0.8, 0.8, 0.8)
+  boldPrintf("この設定は手動プレイとオートプレイ両方に適用されます", 0, 160, BASE_W, "center")
+
+  -- 流行減衰率入力
+  local decayY = 250
+  love.graphics.setFont(menuFont)
+  love.graphics.setColor(1, 1, 1)
+  boldPrint("流行減衰率（/月）:", 250, decayY)
+
+  -- 入力ボックス
+  love.graphics.setColor(0.5, 0.5, 0.2)
+  love.graphics.rectangle("fill", 480, decayY - 5, 140, 35)
+  love.graphics.setColor(1, 1, 1)
+  local decayText = autoplayDecayInputBuffer == "" and tostring(autoplayTrendDecay) or autoplayDecayInputBuffer
+  boldPrint(decayText .. "_", 490, decayY)
+
+  -- 説明テキスト
+  love.graphics.setFont(smallFont)
+  love.graphics.setColor(0.7, 0.7, 0.7)
+  boldPrint("※現在の値: " .. autoplayTrendDecay .. "/月", 250, 320)
+  boldPrint("※マイナスで減少、プラスで増加", 250, 350)
+  boldPrint("※デフォルト: -2/月", 250, 380)
+
+  -- 操作説明
+  love.graphics.setFont(smallFont)
+  love.graphics.setColor(1, 1, 0)
+  boldPrintf("Enter: 設定を保存  ESC: キャンセル", 0, 500, BASE_W, "center")
 end
 
 function drawAutoplayMenuScreen()
   love.graphics.setFont(titleFont)
   love.graphics.setColor(1, 1, 1)
-  boldPrintf("オートプレイモード設定", 0, 80, BASE_W, "center")
+  boldPrintf("オートプレイモード", 0, 150, BASE_W, "center")
 
+  love.graphics.setFont(menuFont)
+  boldPrintf("実行回数を入力してください（1～10000）", 0, 250, BASE_W, "center")
+
+  -- 入力ボックス表示
+  love.graphics.setColor(0.5, 0.5, 0.2)
+  love.graphics.rectangle("fill", 300, 300, 200, 40)
+  love.graphics.setColor(1, 1, 1)
+  love.graphics.setFont(menuFont)
+  local countText = autoplayInputBuffer == "" and "100" or autoplayInputBuffer
+  boldPrint(countText .. "_", 320, 310)
+
+  -- 現在の設定を表示
   love.graphics.setFont(smallFont)
   love.graphics.setColor(0.8, 0.8, 0.8)
-  boldPrintf("Tab/↑↓: フィールド切替  Enter: 実行開始  ESC: キャンセル", 0, 520, BASE_W, "center")
+  boldPrintf("使用される設定: 流行減衰率 = " .. autoplayTrendDecay .. "/月", 0, 380, BASE_W, "center")
+  boldPrintf("※設定を変更する場合は「3: ゲーム設定」から", 0, 410, BASE_W, "center")
 
-  -- 実行回数入力
-  local countY = 180
-  love.graphics.setFont(menuFont)
-  if autoplayInputField == "count" then
-    love.graphics.setColor(1, 1, 0)
-    boldPrint("► ", 180, countY)
-  end
-  love.graphics.setColor(1, 1, 1)
-  boldPrint("実行回数（1～10000）:", 210, countY)
-
-  -- 入力ボックス（実行回数）
-  if autoplayInputField == "count" then
-    love.graphics.setColor(0.5, 0.5, 0.2)
-  else
-    love.graphics.setColor(0.3, 0.3, 0.3)
-  end
-  love.graphics.rectangle("fill", 480, countY - 5, 140, 35)
-  love.graphics.setColor(1, 1, 1)
-  local countText = autoplayInputBuffer == "" and "100" or autoplayInputBuffer
-  if autoplayInputField == "count" then
-    countText = countText .. "_"
-  end
-  boldPrint(countText, 490, countY)
-
-  -- 流行減衰率入力
-  local decayY = 260
-  love.graphics.setFont(menuFont)
-  if autoplayInputField == "decay" then
-    love.graphics.setColor(1, 1, 0)
-    boldPrint("► ", 180, decayY)
-  end
-  love.graphics.setColor(1, 1, 1)
-  boldPrint("流行減衰率（/月）:", 210, decayY)
-
-  -- 入力ボックス（流行減衰率）
-  if autoplayInputField == "decay" then
-    love.graphics.setColor(0.5, 0.5, 0.2)
-  else
-    love.graphics.setColor(0.3, 0.3, 0.3)
-  end
-  love.graphics.rectangle("fill", 480, decayY - 5, 140, 35)
-  love.graphics.setColor(1, 1, 1)
-  local decayText = autoplayDecayInputBuffer == "" and "-2" or autoplayDecayInputBuffer
-  if autoplayInputField == "decay" then
-    decayText = decayText .. "_"
-  end
-  boldPrint(decayText, 490, decayY)
-
-  -- 説明テキスト
   love.graphics.setFont(smallFont)
-  love.graphics.setColor(0.7, 0.7, 0.7)
-  boldPrint("※デフォルト: 実行回数=100、流行減衰率=-2", 200, 350)
-  boldPrint("※流行減衰率: マイナスで減少、プラスで増加", 200, 380)
+  love.graphics.setColor(1, 1, 0)
+  boldPrintf("Enter: 実行開始  ESC: タイトルに戻る", 0, 480, BASE_W, "center")
 end
 
 function drawAutoplayRunningScreen()
