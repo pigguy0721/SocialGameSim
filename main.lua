@@ -1321,12 +1321,8 @@ function drawActionSelectScreen()
   local y = #lastActionResult > 0 and 285 or 240
   local idx = 1
 
-  love.graphics.setFont(smallFont)
-  love.graphics.setColor(1, 1, 1)
-  boldPrint("【イベント対応】", 50, y)
-  y = y + 25
-
-  love.graphics.setFont(tinyFont)
+  -- 未処理イベント数を計算
+  local unhandledEvents = {}
   for i, evt in ipairs(state.currentMonthEvents) do
     local handled = false
     for _, id in ipairs(state.handledEvents) do
@@ -1336,12 +1332,22 @@ function drawActionSelectScreen()
       end
     end
     if not handled then
-      local color = idx == selectedIndex and {1, 1, 0} or {1, 1, 1}
-      love.graphics.setColor(color)
-      boldPrint((idx) .. ". " .. evt.name .. " (N:" .. evt.costN .. " C:" .. evt.costC .. " T:" .. evt.costT .. ")", 70, y)
-      y = y + 20
-      idx = idx + 1
+      table.insert(unhandledEvents, evt)
     end
+  end
+
+  love.graphics.setFont(smallFont)
+  love.graphics.setColor(1, 1, 1)
+  boldPrint("【イベント対応】", 50, y)
+  y = y + 25
+
+  love.graphics.setFont(tinyFont)
+  for i, evt in ipairs(unhandledEvents) do
+    local color = idx == selectedIndex and {1, 1, 0} or {1, 1, 1}
+    love.graphics.setColor(color)
+    boldPrint((idx) .. ". " .. evt.name .. " (N:" .. evt.costN .. " C:" .. evt.costC .. " T:" .. evt.costT .. ")", 70, y)
+    y = y + 20
+    idx = idx + 1
   end
 
   -- 通常行動
