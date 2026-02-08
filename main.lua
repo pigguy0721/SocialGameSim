@@ -35,6 +35,16 @@ local selectedIndex = 1
 local lastActionResult = {}
 local monthEndReport = {}
 
+-- オートプレイモード関連
+local autoplayRunCount = 0         -- 実行回数
+local autoplayCurrentRun = 0       -- 現在の実行番号
+local autoplayResults = {}         -- 全プレイの結果を格納
+local autoplayInputBuffer = ""     -- 数値入力バッファ（実行回数）
+local autoplayDecayInputBuffer = "" -- 数値入力バッファ（流行減衰率）
+local autoplayTimer = 0            -- 自動進行タイマー
+local autoplayTrendDecay = -2      -- 流行減衰率（設定値）
+local autoplayInputField = "count" -- 現在編集中のフィールド ("count" or "decay")
+
 -- フォント
 local titleFont, menuFont, smallFont, tinyFont
 local isBorderlessFullscreen = false
@@ -52,12 +62,15 @@ function boldPrintf(text, x, y, limit, align)
   love.graphics.printf(text, x, y, limit, align)
 end
 
+-- ===== オートプレイ関連関数 =====
+
+-- オートプレイ開始
 -- ===== 状態初期化 =====
 function initState()
   state = {
     phase = "dev",
     month = 1,
-    money = 0,
+    money = -2000,  -- 初期借金2000万円
     N = INITIAL_N,
     C = INITIAL_C,
     T = INITIAL_T,
@@ -886,6 +899,326 @@ local opsActions = {
   },
 }
 
+-- ===== オートプレイモード関数 =====
+
+function startAutoplay(count)
+  autoplayRunCount = count
+  autoplayCurrentRun = 0
+  autoplayResults = {}
+  autoplayTimer = 0
+  gameState = "autoplay_running"
+
+  -- 全ゲームを同期的に実行
+  for i = 1, count do
+    autoplayCurrentRun = i
+    runSingleAutoplayGame()
+  end
+
+  -- 結果表示へ
+  showAutoplayResults()
+end
+
+-- 1ゲーム全体を同期的に実行
+function runSingleAutoplayGame()
+  -- シード設定（再現性のため）
+  math.randomseed(os.time() + autoplayCurrentRun)
+
+  -- ゲーム状態初期化
+  initState()
+
+  -- ゲームループ
+  while true do
+    -- 月初処理
+    state.N = state.maxN
+    state.C = state.maxC
+    state.T = state.maxT
+    state.actionsRemaining = ACTIONS_PER_MONTH
+
+    -- イベント生成
+    generateMonthEvents()
+
+    -- 4回の行動実行
+    for action_num = 1, ACTIONS_PER_MONTH do
+      if state.actionsRemaining > 0 then
+        local choices = getAvailableChoices()
+        if #choices > 0 then
+          local choice = choices[math.random(#choices)]
+          executeAutoChoice(choice)
+        else
+          break
+        end
+      end
+    end
+
+    -- 月末処理
+    processMonthEndLogic()
+
+    -- リリース判定（12ヶ月目終了後）
+    if state.month == DEV_MONTHS and state.phase == "dev" then
+      executeRelease()
+    end
+
+    -- ゲーム終了判定
+    state.month = state.month + 1
+
+    -- クリア判定
+    if state.month > TOTAL_MONTHS then
+      recordAutoplayResult("clear")
+      return
+    end
+
+    -- ゲームオーバー判定（運営2年目以降のみ）
+    if state.money < 0 and state.phase == "ops" and state.month > DEV_MONTHS + 12 then
+      recordAutoplayResult("gameover")
+      return
+    end
+  end
+end
+
+-- イベント生成（processMonthStartから分離）
+function generateMonthEvents()
+  state.currentMonthEvents = {}
+  state.handledEvents = {}
+
+  local eligibleEvents = {}
+  for _, evt in ipairs(allEvents) do
+    if evt.phase == state.phase or evt.phase == "both" then
+      table.insert(eligibleEvents, evt)
+    end
+  end
+
+  if #eligibleEvents > 0 then
+    for i = 1, math.min(4, #eligibleEvents) do
+      local idx = math.random(1, #eligibleEvents)
+      local evt = eligibleEvents[idx]
+      local copy = {
+        id = evt.id .. "_" .. state.month .. "_" .. i,
+        name = evt.name,
+        desc = evt.desc,
+        type = evt.type,
+        costN = evt.costN,
+        costC = evt.costC,
+        costT = evt.costT,
+        apply = evt.apply,
+      }
+      table.insert(state.currentMonthEvents, copy)
+      table.remove(eligibleEvents, idx)
+    end
+  end
+end
+
+-- 月末処理のロジック部分のみ（processMonthEndから分離）
+function processMonthEndLogic()
+  -- 未対応マイナスイベントへのペナルティ
+  local unhandledMinusCount = 0
+  for _, evt in ipairs(state.currentMonthEvents) do
+    if evt.type == "minus" then
+      local handled = false
+      for _, id in ipairs(state.handledEvents) do
+        if id == evt.id then
+          handled = true
+          break
+        end
+      end
+      if not handled then
+        unhandledMinusCount = unhandledMinusCount + 1
+      end
+    end
+  end
+
+  if unhandledMinusCount > 0 then
+    state.money = state.money - (unhandledMinusCount * 100)
+  end
+
+  -- 運営期のみ：収益・維持費・減衰
+  if state.phase == "ops" then
+    local revenue = (state.maxN + state.maxC) * 10 + state.trend * 5
+    state.money = state.money + revenue - 200  -- 維持費200万円
+    state.trend = state.trend + autoplayTrendDecay  -- 設定可能な減衰率
+
+    -- ストア評価更新
+    if state.trend >= 100 then
+      state.storeRating = 5.0
+    elseif state.trend >= 70 then
+      state.storeRating = 4.5
+    elseif state.trend >= 50 then
+      state.storeRating = 4.0
+    elseif state.trend >= 30 then
+      state.storeRating = 3.5
+    elseif state.trend >= 15 then
+      state.storeRating = 3.0
+    elseif state.trend >= 5 then
+      state.storeRating = 2.5
+    else
+      state.storeRating = 2.0
+    end
+
+    -- セルランク計算
+    local rankScore = state.trend + state.storeRating * 10
+    state.storeRanking = math.max(1, math.min(50, math.floor(51 - rankScore / 3)))
+
+    -- 目標達成判定
+    if state.month == DEV_MONTHS + 12 and state.money >= 0 then
+      state.goals.debtCleared = true
+    end
+    if state.month == TOTAL_MONTHS and state.storeRanking == 1 then
+      state.goals.reachedRank1 = true
+    end
+  end
+end
+
+-- 選択可能な行動リストを取得
+function getAvailableChoices()
+  local choices = {}
+
+  -- 1. 未対応イベント
+  for _, evt in ipairs(state.currentMonthEvents) do
+    local handled = false
+    for _, id in ipairs(state.handledEvents) do
+      if id == evt.id then
+        handled = true
+        break
+      end
+    end
+
+    if not handled and canAffordAction(evt) then
+      table.insert(choices, {type = "event", data = evt})
+    end
+  end
+
+  -- 2. 通常行動
+  local actions = state.phase == "dev" and devActions or opsActions
+  for _, act in ipairs(actions) do
+    if canAffordAction(act) then
+      table.insert(choices, {type = "action", data = act})
+    end
+  end
+
+  -- 3. アイテム（行動消費なし）
+  for idx, item in ipairs(state.items) do
+    table.insert(choices, {type = "item", data = item, index = idx})
+  end
+
+  return choices
+end
+
+-- 選択を実行
+function executeAutoChoice(choice)
+  if choice.type == "event" then
+    local result = handleEvent(choice.data)
+    lastActionResult = result
+  elseif choice.type == "action" then
+    local result = executeAction(choice.data)
+    lastActionResult = result
+  elseif choice.type == "item" then
+    local result = useItem(choice.data)
+    lastActionResult = result
+    table.remove(state.items, choice.index)
+  end
+
+  -- 月末判定（アイテムは行動消費なし）
+  if choice.type ~= "item" and state.actionsRemaining == 0 then
+    processMonthEnd()
+    subState = "month_end"
+  end
+end
+
+-- オートプレイの結果を記録
+function recordAutoplayResult(result)
+  local record = {
+    runNumber = autoplayCurrentRun,
+    result = result,  -- "clear" or "gameover"
+    finalMonth = state.month,
+    finalMoney = state.money,
+    finalTrend = state.trend,
+    maxN = state.maxN,
+    maxC = state.maxC,
+    maxT = state.maxT,
+    storeRating = state.storeRating,
+    storeRanking = state.storeRanking or 0,
+    debtCleared = state.goals.debtCleared,
+    rank1Achieved = state.goals.reachedRank1
+  }
+
+  table.insert(autoplayResults, record)
+end
+
+-- 結果表示画面へ遷移
+function showAutoplayResults()
+  gameState = "autoplay_result"
+
+  -- CSV出力
+  writeAutoplayCSV()
+end
+
+-- オートプレイ結果を集計
+function aggregateResults()
+  local clearCount = 0
+  local totalMoney = 0
+  local totalMonth = 0
+  local maxMoney = -999999
+  local minMoney = 999999
+
+  for _, result in ipairs(autoplayResults) do
+    if result.result == "clear" then
+      clearCount = clearCount + 1
+    end
+    totalMoney = totalMoney + result.finalMoney
+    totalMonth = totalMonth + result.finalMonth
+    maxMoney = math.max(maxMoney, result.finalMoney)
+    minMoney = math.min(minMoney, result.finalMoney)
+  end
+
+  local avgMoney = totalMoney / #autoplayResults
+  local avgMonth = totalMonth / #autoplayResults
+  local clearRate = (clearCount / #autoplayResults) * 100
+
+  return {
+    clearCount = clearCount,
+    clearRate = clearRate,
+    avgMoney = avgMoney,
+    avgMonth = avgMonth,
+    maxMoney = maxMoney,
+    minMoney = minMoney
+  }
+end
+
+-- オートプレイ結果をCSV出力
+function writeAutoplayCSV()
+  local csv = "流行減衰率,実行番号,結果,最終月,最終資金,流行,maxN,maxC,maxT,ストア評価,セルラン,借金完済,セルラン1位\n"
+
+  for _, result in ipairs(autoplayResults) do
+    csv = csv .. string.format(
+      "%d,%d,%s,%d,%d,%d,%d,%d,%d,%.1f,%d,%s,%s\n",
+      autoplayTrendDecay,
+      result.runNumber,
+      result.result,
+      result.finalMonth,
+      result.finalMoney,
+      result.finalTrend,
+      result.maxN,
+      result.maxC,
+      result.maxT,
+      result.storeRating,
+      result.storeRanking,
+      result.debtCleared and "達成" or "未達成",
+      result.rank1Achieved and "達成" or "未達成"
+    )
+  end
+
+  -- タイムスタンプ付きファイル名で保存
+  local filename = "autoplay_results_" .. os.date("%Y%m%d_%H%M%S") .. ".csv"
+  local success, errorMsg = love.filesystem.write(filename, csv)
+
+  if success then
+    print("CSV保存完了: " .. love.filesystem.getSaveDirectory() .. "/" .. filename)
+  else
+    print("エラー: CSV保存失敗 - " .. errorMsg)
+    -- フォールバック：標準出力にダンプ
+    print(csv)
+  end
+end
+
 -- 月初処理
 function processMonthStart()
   -- N/C/T全回復
@@ -1059,21 +1392,21 @@ end
 function advanceMonth()
   state.month = state.month + 1
 
+  -- クリア判定
   if state.month > TOTAL_MONTHS then
-    -- ゲームクリア
     gameState = "gameover"
     subState = "final"
     return
   end
 
-  -- フェーズ移行（24ヶ月目終了後）
+  -- フェーズ移行（12ヶ月目終了後）
   if state.month == DEV_MONTHS + 1 and state.phase == "dev" then
     subState = "release"
     return
   end
 
-  -- サ終判定
-  if state.money < 0 and state.phase == "ops" then
+  -- サ終判定（運営2年目以降のみ）
+  if state.money < 0 and state.phase == "ops" and state.month > DEV_MONTHS + 12 then
     gameState = "gameover"
     return
   end
@@ -1085,8 +1418,7 @@ function executeRelease()
   state.phase = "ops"
   -- 流行指数を決定
   state.trend = state.maxN + state.maxC + math.random(-20, 20)
-  -- 初期資金
-  state.money = 5000
+  -- リリース時のボーナスなし（借金-2000のまま運営開始）
 end
 
 -- イベント処理
@@ -1147,9 +1479,14 @@ function love.keypressed(key)
   end
 
   if gameState == "title" then
-    if key == "space" or key == "return" then
+    if key == "space" or key == "return" or key == "1" then
       gameState = "game"
       processMonthStart()
+    elseif key == "2" then
+      gameState = "autoplay_menu"
+      autoplayInputBuffer = ""
+      autoplayDecayInputBuffer = ""
+      autoplayInputField = "count"
     end
   elseif gameState == "game" then
     if subState == "action_select" then
@@ -1232,10 +1569,58 @@ function love.keypressed(key)
         advanceMonth()
       end
     end
+  elseif gameState == "autoplay_menu" then
+    if key == "escape" then
+      gameState = "title"
+    elseif key == "tab" or key == "down" then
+      -- フィールド切り替え
+      autoplayInputField = autoplayInputField == "count" and "decay" or "count"
+    elseif key == "up" then
+      -- フィールド切り替え（逆方向）
+      autoplayInputField = autoplayInputField == "decay" and "count" or "decay"
+    elseif key == "return" or key == "space" then
+      -- 実行開始
+      local count = tonumber(autoplayInputBuffer)
+      if count == nil or count < 1 then count = 100 end  -- デフォルト100
+      if count > 10000 then count = 10000 end
+
+      local decay = tonumber(autoplayDecayInputBuffer)
+      if decay == nil then decay = -2 end  -- デフォルト-2
+
+      autoplayTrendDecay = decay
+      startAutoplay(count)
+    elseif key == "backspace" then
+      -- 現在のフィールドの入力を削除
+      if autoplayInputField == "count" then
+        autoplayInputBuffer = string.sub(autoplayInputBuffer, 1, -2)
+      else
+        autoplayDecayInputBuffer = string.sub(autoplayDecayInputBuffer, 1, -2)
+      end
+    elseif key == "-" or key == "kp-" then
+      -- マイナス記号（減衰率フィールドのみ、先頭のみ）
+      if autoplayInputField == "decay" and #autoplayDecayInputBuffer == 0 then
+        autoplayDecayInputBuffer = "-"
+      end
+    else
+      -- 数字入力
+      local num = tonumber(key)
+      if num then
+        if autoplayInputField == "count" and #autoplayInputBuffer < 5 then
+          autoplayInputBuffer = autoplayInputBuffer .. key
+        elseif autoplayInputField == "decay" and #autoplayDecayInputBuffer < 4 then
+          autoplayDecayInputBuffer = autoplayDecayInputBuffer .. key
+        end
+      end
+    end
+  elseif gameState == "autoplay_result" then
+    if key == "space" or key == "return" or key == "escape" then
+      gameState = "title"
+    end
   end
 end
 
 function love.update(dt)
+  -- 特に処理なし（オートプレイは同期的に実行される）
 end
 
 function love.draw()
@@ -1256,14 +1641,24 @@ function love.draw()
 
   if gameState == "title" then
     drawTitleScreen()
+  elseif gameState == "autoplay_menu" then
+    drawAutoplayMenuScreen()
   elseif gameState == "game" then
-    if subState == "action_select" then
-      drawActionSelectScreen()
-    elseif subState == "month_end" then
-      drawMonthEndScreen()
-    elseif subState == "release" then
-      drawReleaseScreen()
+    -- オートプレイ中は簡易表示
+    if autoplayCurrentRun > 0 then
+      drawAutoplayRunningScreen()
+    else
+      -- 通常のゲーム画面
+      if subState == "action_select" then
+        drawActionSelectScreen()
+      elseif subState == "month_end" then
+        drawMonthEndScreen()
+      elseif subState == "release" then
+        drawReleaseScreen()
+      end
     end
+  elseif gameState == "autoplay_result" then
+    drawAutoplayResultScreen()
   elseif gameState == "gameover" then
     if subState == "final" then
       drawFinalScreen()
@@ -1283,9 +1678,133 @@ function drawTitleScreen()
   boldPrintf("ソシャゲ運営シミュレーション v5", 0, 200, BASE_W, "center")
 
   love.graphics.setFont(smallFont)
-  boldPrintf("Space / Enter: Start", 0, 300, BASE_W, "center")
-  boldPrintf("F11: Toggle Fullscreen", 0, 330, BASE_W, "center")
-  boldPrintf("ESC: Quit", 0, 360, BASE_W, "center")
+  boldPrintf("1: ゲーム開始", 0, 300, BASE_W, "center")
+  boldPrintf("2: オートプレイモード", 0, 330, BASE_W, "center")
+  boldPrintf("F11: Toggle Fullscreen", 0, 360, BASE_W, "center")
+  boldPrintf("ESC: Quit", 0, 390, BASE_W, "center")
+end
+
+function drawAutoplayMenuScreen()
+  love.graphics.setFont(titleFont)
+  love.graphics.setColor(1, 1, 1)
+  boldPrintf("オートプレイモード設定", 0, 80, BASE_W, "center")
+
+  love.graphics.setFont(smallFont)
+  love.graphics.setColor(0.8, 0.8, 0.8)
+  boldPrintf("Tab/↑↓: フィールド切替  Enter: 実行開始  ESC: キャンセル", 0, 520, BASE_W, "center")
+
+  -- 実行回数入力
+  local countY = 180
+  love.graphics.setFont(menuFont)
+  if autoplayInputField == "count" then
+    love.graphics.setColor(1, 1, 0)
+    boldPrint("► ", 180, countY)
+  end
+  love.graphics.setColor(1, 1, 1)
+  boldPrint("実行回数（1～10000）:", 210, countY)
+
+  -- 入力ボックス（実行回数）
+  if autoplayInputField == "count" then
+    love.graphics.setColor(0.5, 0.5, 0.2)
+  else
+    love.graphics.setColor(0.3, 0.3, 0.3)
+  end
+  love.graphics.rectangle("fill", 480, countY - 5, 140, 35)
+  love.graphics.setColor(1, 1, 1)
+  local countText = autoplayInputBuffer == "" and "100" or autoplayInputBuffer
+  if autoplayInputField == "count" then
+    countText = countText .. "_"
+  end
+  boldPrint(countText, 490, countY)
+
+  -- 流行減衰率入力
+  local decayY = 260
+  love.graphics.setFont(menuFont)
+  if autoplayInputField == "decay" then
+    love.graphics.setColor(1, 1, 0)
+    boldPrint("► ", 180, decayY)
+  end
+  love.graphics.setColor(1, 1, 1)
+  boldPrint("流行減衰率（/月）:", 210, decayY)
+
+  -- 入力ボックス（流行減衰率）
+  if autoplayInputField == "decay" then
+    love.graphics.setColor(0.5, 0.5, 0.2)
+  else
+    love.graphics.setColor(0.3, 0.3, 0.3)
+  end
+  love.graphics.rectangle("fill", 480, decayY - 5, 140, 35)
+  love.graphics.setColor(1, 1, 1)
+  local decayText = autoplayDecayInputBuffer == "" and "-2" or autoplayDecayInputBuffer
+  if autoplayInputField == "decay" then
+    decayText = decayText .. "_"
+  end
+  boldPrint(decayText, 490, decayY)
+
+  -- 説明テキスト
+  love.graphics.setFont(smallFont)
+  love.graphics.setColor(0.7, 0.7, 0.7)
+  boldPrint("※デフォルト: 実行回数=100、流行減衰率=-2", 200, 350)
+  boldPrint("※流行減衰率: マイナスで減少、プラスで増加", 200, 380)
+end
+
+function drawAutoplayRunningScreen()
+  love.graphics.setFont(titleFont)
+  love.graphics.setColor(1, 1, 1)
+  boldPrintf("オートプレイ実行中...", 0, 200, BASE_W, "center")
+
+  love.graphics.setFont(menuFont)
+  local progress = string.format("%d / %d 回完了", autoplayCurrentRun - 1, autoplayRunCount)
+  boldPrintf(progress, 0, 280, BASE_W, "center")
+
+  local percentage = ((autoplayCurrentRun - 1) / autoplayRunCount) * 100
+  boldPrintf(string.format("%.1f%%", percentage), 0, 320, BASE_W, "center")
+
+  -- プログレスバー
+  love.graphics.setColor(0.3, 0.3, 0.3)
+  love.graphics.rectangle("fill", 200, 380, 400, 30)
+  love.graphics.setColor(0.5, 1, 0.5)
+  local barWidth = 400 * (autoplayCurrentRun - 1) / autoplayRunCount
+  love.graphics.rectangle("fill", 200, 380, barWidth, 30)
+end
+
+function drawAutoplayResultScreen()
+  local stats = aggregateResults()
+
+  love.graphics.setFont(titleFont)
+  love.graphics.setColor(1, 1, 1)
+  boldPrintf("オートプレイ結果", 0, 50, BASE_W, "center")
+
+  love.graphics.setFont(menuFont)
+  local y = 150
+
+  boldPrint("実行回数: " .. autoplayRunCount .. "回", 100, y)
+  y = y + 35
+  love.graphics.setColor(0.8, 0.8, 0.8)
+  boldPrint("流行減衰率: " .. autoplayTrendDecay .. "/月", 100, y)
+  y = y + 45
+
+  love.graphics.setColor(0.5, 1, 0.5)
+  boldPrint("クリア回数: " .. stats.clearCount .. "回 (" .. string.format("%.1f", stats.clearRate) .. "%)", 100, y)
+  y = y + 40
+
+  love.graphics.setColor(1, 1, 1)
+  boldPrint("平均最終資金: " .. string.format("%.0f", stats.avgMoney) .. "万円", 100, y)
+  y = y + 35
+  boldPrint("最高資金: " .. stats.maxMoney .. "万円", 100, y)
+  y = y + 35
+  boldPrint("最低資金: " .. stats.minMoney .. "万円", 100, y)
+  y = y + 35
+  boldPrint("平均到達月: " .. string.format("%.1f", stats.avgMonth) .. "ヶ月", 100, y)
+  y = y + 60
+
+  love.graphics.setFont(smallFont)
+  love.graphics.setColor(0.5, 1, 1)
+  boldPrint("CSV保存完了: " .. love.filesystem.getSaveDirectory() .. "/autoplay_results_*.csv", 50, y)
+  y = y + 40
+
+  love.graphics.setColor(1, 1, 0)
+  boldPrintf("Space: タイトルに戻る", 0, 550, BASE_W, "center")
 end
 
 function drawActionSelectScreen()
