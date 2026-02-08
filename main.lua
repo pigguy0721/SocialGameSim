@@ -68,12 +68,17 @@ function initState()
     decay = 0,
     momentum = 0,
     storeRating = 3,
+    storeRanking = 50,  -- セルラン（1位～50位+）
     trendLabel = "",
     currentMonthEvents = {},
     futureEvents = {},
     actionsRemaining = ACTIONS_PER_MONTH,
     handledEvents = {},
     items = {},
+    goals = {
+      debtCleared = false,    -- 運営1周年（24ヶ月）で借金完済
+      reachedRank1 = false,   -- 運営3周年（48ヶ月）でセルラン1位
+    },
   }
 end
 
@@ -1017,6 +1022,35 @@ function processMonthEnd()
       state.storeRating = 1
       state.trendLabel = "やや過疎"
     end
+
+    -- セルラン計算（流行指数とストア評価から算出）
+    local rankScore = state.trend + state.storeRating * 10
+    if rankScore >= 80 then
+      state.storeRanking = 1
+    elseif rankScore >= 60 then
+      state.storeRanking = math.random(2, 5)
+    elseif rankScore >= 40 then
+      state.storeRanking = math.random(6, 10)
+    elseif rankScore >= 20 then
+      state.storeRanking = math.random(11, 20)
+    elseif rankScore >= 0 then
+      state.storeRanking = math.random(21, 35)
+    else
+      state.storeRanking = math.random(36, 50)
+    end
+
+    -- 目標達成チェック
+    -- 運営1周年（24ヶ月）で借金完済
+    if state.month == 24 and state.money >= 0 then
+      state.goals.debtCleared = true
+      table.insert(monthEndReport, { text = "★目標達成★ 運営1周年で借金完済！" })
+    end
+
+    -- 運営3周年（48ヶ月）でセルラン1位
+    if state.month == 48 and state.storeRanking == 1 then
+      state.goals.reachedRank1 = true
+      table.insert(monthEndReport, { text = "★目標達成★ 運営3周年でセルラン1位！" })
+    end
   end
 
   table.insert(monthEndReport, { label = "最終資金", val = state.money, suffix = "万" })
@@ -1274,29 +1308,28 @@ function drawActionSelectScreen()
   boldPrint("N:" .. state.N .. "/" .. state.maxN .. "  C:" .. state.C .. "/" .. state.maxC .. "  T:" .. state.T .. "/" .. state.maxT, 50, 70)
   boldPrint("資金: " .. state.money .. "万  残り行動: " .. state.actionsRemaining, 50, 100)
 
-  -- 今月のイベント情報（左カラム）
-  love.graphics.setFont(tinyFont)
-  love.graphics.setColor(1, 1, 1)
-  boldPrint("今月のイベント:", 50, 130)
-  for i, evt in ipairs(state.currentMonthEvents) do
-    local color = evt.type == "plus" and {0.5, 1, 0.5} or {1, 0.5, 0.5}
-    love.graphics.setColor(color)
-    boldPrint(i .. ". " .. evt.name, 70, 130 + i * 18)
+  -- 運営期の場合はセルランも表示
+  if state.phase == "ops" then
+    love.graphics.setFont(tinyFont)
+    boldPrint("セルラン: " .. state.storeRanking .. "位  ストア評価: " .. string.rep("★", state.storeRating) .. string.rep("☆", 5 - state.storeRating), 50, 125)
+    love.graphics.setFont(smallFont)
   end
 
   -- 未来イベント予告（右カラム）
+  local futureY = state.phase == "ops" and 150 or 130
   if #state.futureEvents > 0 then
+    love.graphics.setFont(tinyFont)
     love.graphics.setColor(1, 1, 1)
-    boldPrint("今後の予定（3ヶ月先まで）:", 420, 130)
+    boldPrint("今後の予定（3ヶ月先まで）:", 420, futureY)
     for i, futureEvt in ipairs(state.futureEvents) do
       local color = futureEvt.type == "plus" and {0.7, 1, 0.7} or {1, 0.7, 0.7}
       love.graphics.setColor(color)
-      boldPrint(futureEvt.month .. "ヶ月目: " .. futureEvt.name, 440, 130 + i * 18)
+      boldPrint(futureEvt.month .. "ヶ月目: " .. futureEvt.name, 440, futureY + i * 18)
     end
   end
 
   -- 前回の行動結果表示エリア
-  local resultY = 220
+  local resultY = state.phase == "ops" and 175 or 155
   if #lastActionResult > 0 then
     love.graphics.setFont(smallFont)
     love.graphics.setColor(0.5, 1, 1)  -- シアン系
@@ -1318,7 +1351,7 @@ function drawActionSelectScreen()
   end
 
   -- 選択肢表示
-  local y = #lastActionResult > 0 and 285 or 240
+  local y = #lastActionResult > 0 and (state.phase == "ops" and 245 or 225) or (state.phase == "ops" and 200 or 180)
   local idx = 1
 
   -- 未処理イベント数を計算
@@ -1336,18 +1369,26 @@ function drawActionSelectScreen()
     end
   end
 
-  love.graphics.setFont(smallFont)
-  love.graphics.setColor(1, 1, 1)
-  boldPrint("【イベント対応】", 50, y)
-  y = y + 25
+  -- イベント対応（統合表示）
+  if #unhandledEvents > 0 then
+    love.graphics.setFont(smallFont)
+    love.graphics.setColor(1, 1, 1)
+    boldPrint("【イベント対応】", 50, y)
+    y = y + 25
 
-  love.graphics.setFont(tinyFont)
-  for i, evt in ipairs(unhandledEvents) do
-    local color = idx == selectedIndex and {1, 1, 0} or {1, 1, 1}
-    love.graphics.setColor(color)
-    boldPrint((idx) .. ". " .. evt.name .. " (N:" .. evt.costN .. " C:" .. evt.costC .. " T:" .. evt.costT .. ")", 70, y)
-    y = y + 20
-    idx = idx + 1
+    love.graphics.setFont(tinyFont)
+    for i, evt in ipairs(unhandledEvents) do
+      local nameColor = idx == selectedIndex and {1, 1, 0} or (evt.type == "plus" and {0.5, 1, 0.5} or {1, 0.5, 0.5})
+      love.graphics.setColor(nameColor)
+      boldPrint((idx) .. ". " .. evt.name .. " (N:" .. evt.costN .. " C:" .. evt.costC .. " T:" .. evt.costT .. ")", 70, y)
+      
+      -- 詳細説明を追加（グレー）
+      love.graphics.setColor(0.7, 0.7, 0.7)
+      boldPrint("   " .. evt.desc, 90, y + 13)
+      
+      y = y + 30
+      idx = idx + 1
+    end
   end
 
   -- 通常行動
@@ -1430,14 +1471,23 @@ function drawMonthEndScreen()
   love.graphics.setFont(smallFont)
   local y = 100
   for _, r in ipairs(monthEndReport) do
-    local text = r.label .. ": " .. (r.val >= 0 and "+" or "") .. r.val .. (r.suffix or "")
-    boldPrint(text, 70, y)
+    if r.text then
+      -- 目標達成などのテキストメッセージ
+      love.graphics.setColor(1, 1, 0)  -- 黄色で強調
+      boldPrint(r.text, 70, y)
+      love.graphics.setColor(1, 1, 1)
+    else
+      local text = r.label .. ": " .. (r.val >= 0 and "+" or "") .. r.val .. (r.suffix or "")
+      boldPrint(text, 70, y)
+    end
     y = y + 30
   end
 
   if state.phase == "ops" then
     y = y + 20
     love.graphics.setColor(1, 1, 1)
+    boldPrint("セルラン: " .. state.storeRanking .. "位", 70, y)
+    y = y + 30
     boldPrint("ストア評価: " .. string.rep("★", state.storeRating) .. string.rep("☆", 5 - state.storeRating), 70, y)
     y = y + 30
     boldPrint("状況: " .. state.trendLabel, 70, y)
@@ -1468,7 +1518,34 @@ function drawFinalScreen()
 
   love.graphics.setFont(smallFont)
   boldPrint("最終資金: " .. state.money .. "万円", 50, 180)
+  boldPrint("最終セルラン: " .. state.storeRanking .. "位", 50, 220)
 
+  -- 目標達成状況
+  local y = 280
+  love.graphics.setFont(smallFont)
+  love.graphics.setColor(1, 1, 0)
+  boldPrint("【目標達成状況】", 50, y)
+  y = y + 40
+
+  love.graphics.setFont(smallFont)
+  if state.goals.debtCleared then
+    love.graphics.setColor(0.5, 1, 0.5)  -- 緑
+    boldPrint("✓ 運営1周年で借金完済", 70, y)
+  else
+    love.graphics.setColor(1, 0.5, 0.5)  -- 赤
+    boldPrint("✗ 運営1周年で借金完済", 70, y)
+  end
+  y = y + 35
+
+  if state.goals.reachedRank1 then
+    love.graphics.setColor(0.5, 1, 0.5)  -- 緑
+    boldPrint("✓ 運営3周年でセルラン1位", 70, y)
+  else
+    love.graphics.setColor(1, 0.5, 0.5)  -- 赤
+    boldPrint("✗ 運営3周年でセルラン1位", 70, y)
+  end
+
+  love.graphics.setColor(1, 1, 1)
   love.graphics.setFont(tinyFont)
   boldPrint("ESC: Return to Title", 50, 500)
 end
