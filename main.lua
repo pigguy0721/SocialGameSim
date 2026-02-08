@@ -6,9 +6,9 @@
 local FONT_PATH = "fonts/NotoSansJP-Regular.ttf"
 
 -- ゲーム期間
-local DEV_MONTHS = 24        -- 開発期：24ヶ月
+local DEV_MONTHS = 12        -- 開発期：12ヶ月
 local OPS_MONTHS = 36        -- 運営期：36ヶ月
-local TOTAL_MONTHS = 60      -- 合計：60ヶ月
+local TOTAL_MONTHS = 48      -- 合計：48ヶ月
 local ACTIONS_PER_MONTH = 4  -- 月あたり行動回数
 
 -- リソース初期値
@@ -39,6 +39,7 @@ local monthEndReport = {}
 local titleFont, menuFont, smallFont, tinyFont
 local isBorderlessFullscreen = false
 local isMonthStarted = false  -- 月初フラグ
+local itemScrollOffset = 0  -- アイテムスクロールオフセット
 
 -- ===== 太字描画ヘルパー =====
 function boldPrint(text, x, y)
@@ -87,11 +88,11 @@ local allEvents = {
     phase = "dev",
     costN = 5, costC = 0, costT = 0,
     apply = function(s)
-      s.maxN = s.maxN + 2
-      s.maxC = s.maxC + 1
+      s.maxN = s.maxN + 4
+      s.maxC = s.maxC + 2
       return {
-        { label = "知名度上限", val = 2 },
-        { label = "コンテンツ上限", val = 1 },
+        { label = "知名度上限", val = 4 },
+        { label = "コンテンツ上限", val = 2 },
       }
     end,
   },
@@ -103,11 +104,11 @@ local allEvents = {
     phase = "dev",
     costN = 0, costC = 3, costT = 3,
     apply = function(s)
-      s.maxT = s.maxT + 3
-      s.money = s.money + 150
+      s.maxT = s.maxT + 6
+      s.money = s.money + 300
       return {
-        { label = "技術力上限", val = 3 },
-        { label = "資金", val = 150, suffix = "万" },
+        { label = "技術力上限", val = 6 },
+        { label = "資金", val = 300, suffix = "万" },
       }
     end,
   },
@@ -119,11 +120,11 @@ local allEvents = {
     phase = "dev",
     costN = 0, costC = 0, costT = 8,
     apply = function(s)
-      s.maxT = s.maxT + 5
-      s.maxC = s.maxC + 2
+      s.maxT = s.maxT + 10
+      s.maxC = s.maxC + 4
       return {
-        { label = "技術力上限", val = 5 },
-        { label = "コンテンツ上限", val = 2 },
+        { label = "技術力上限", val = 10 },
+        { label = "コンテンツ上限", val = 4 },
       }
     end,
   },
@@ -137,11 +138,11 @@ local allEvents = {
     phase = "dev",
     costN = 3, costC = 3, costT = 3,
     apply = function(s)
-      s.maxN = s.maxN + 1
-      s.maxC = s.maxC + 1
-      s.maxT = s.maxT + 1
+      s.maxN = s.maxN + 2
+      s.maxC = s.maxC + 2
+      s.maxT = s.maxT + 2
       return {
-        { label = "全リソース上限", val = 1 },
+        { label = "全リソース上限", val = 2 },
         { text = "引き留め成功" },
       }
     end,
@@ -154,9 +155,9 @@ local allEvents = {
     phase = "dev",
     costN = 0, costC = 0, costT = 5,
     apply = function(s)
-      s.maxT = s.maxT + 2
+      s.maxT = s.maxT + 4
       return {
-        { label = "技術力上限", val = 2 },
+        { label = "技術力上限", val = 4 },
         { text = "復旧完了" },
       }
     end,
@@ -171,11 +172,11 @@ local allEvents = {
     phase = "ops",
     costN = 8, costC = 0, costT = 0,
     apply = function(s)
-      s.trend = s.trend + 15
-      s.money = s.money + 200
+      s.trend = s.trend + 30
+      s.money = s.money + 400
       return {
-        { label = "流行", val = 15 },
-        { label = "資金", val = 200, suffix = "万" },
+        { label = "流行", val = 30 },
+        { label = "資金", val = 400, suffix = "万" },
       }
     end,
   },
@@ -187,11 +188,11 @@ local allEvents = {
     phase = "ops",
     costN = 5, costC = 5, costT = 0,
     apply = function(s)
-      s.trend = s.trend + 10
-      s.maxN = s.maxN + 3
+      s.trend = s.trend + 20
+      s.maxN = s.maxN + 6
       return {
-        { label = "流行", val = 10 },
-        { label = "知名度上限", val = 3 },
+        { label = "流行", val = 20 },
+        { label = "知名度上限", val = 6 },
       }
     end,
   },
@@ -203,13 +204,13 @@ local allEvents = {
     phase = "ops",
     costN = 6, costC = 6, costT = 0,
     apply = function(s)
-      s.trend = s.trend + 20
-      s.maxN = s.maxN + 4
-      s.money = s.money + 300
+      s.trend = s.trend + 40
+      s.maxN = s.maxN + 8
+      s.money = s.money + 600
       return {
-        { label = "流行", val = 20 },
-        { label = "知名度上限", val = 4 },
-        { label = "資金", val = 300, suffix = "万" },
+        { label = "流行", val = 40 },
+        { label = "知名度上限", val = 8 },
+        { label = "資金", val = 600, suffix = "万" },
       }
     end,
   },
@@ -221,13 +222,13 @@ local allEvents = {
     phase = "ops",
     costN = 0, costC = 8, costT = 5,
     apply = function(s)
-      s.trend = s.trend + 12
-      s.maxC = s.maxC + 3
-      s.money = s.money + 250
+      s.trend = s.trend + 24
+      s.maxC = s.maxC + 6
+      s.money = s.money + 500
       return {
-        { label = "流行", val = 12 },
-        { label = "コンテンツ上限", val = 3 },
-        { label = "資金", val = 250, suffix = "万" },
+        { label = "流行", val = 24 },
+        { label = "コンテンツ上限", val = 6 },
+        { label = "資金", val = 500, suffix = "万" },
       }
     end,
   },
@@ -241,11 +242,11 @@ local allEvents = {
     phase = "ops",
     costN = 0, costC = 0, costT = 10,
     apply = function(s)
-      s.maxT = s.maxT + 4
-      s.trend = s.trend + 5
+      s.maxT = s.maxT + 8
+      s.trend = s.trend + 10
       return {
-        { label = "技術力上限", val = 4 },
-        { label = "流行", val = 5 },
+        { label = "技術力上限", val = 8 },
+        { label = "流行", val = 10 },
         { text = "迅速対応で信頼回復" },
       }
     end,
@@ -258,11 +259,11 @@ local allEvents = {
     phase = "ops",
     costN = 10, costC = 0, costT = 0,
     apply = function(s)
-      s.maxN = s.maxN + 3
-      s.trend = s.trend + 3
+      s.maxN = s.maxN + 6
+      s.trend = s.trend + 6
       return {
-        { label = "知名度上限", val = 3 },
-        { label = "流行", val = 3 },
+        { label = "知名度上限", val = 6 },
+        { label = "流行", val = 6 },
         { text = "鎮火成功" },
       }
     end,
@@ -275,11 +276,11 @@ local allEvents = {
     phase = "ops",
     costN = 0, costC = 0, costT = 8,
     apply = function(s)
-      s.maxT = s.maxT + 5
-      s.money = s.money + 100
+      s.maxT = s.maxT + 10
+      s.money = s.money + 200
       return {
-        { label = "技術力上限", val = 5 },
-        { label = "資金", val = 100, suffix = "万（補償）" },
+        { label = "技術力上限", val = 10 },
+        { label = "資金", val = 200, suffix = "万（補償）" },
         { text = "復旧完了" },
       }
     end,
@@ -292,13 +293,13 @@ local allEvents = {
     phase = "ops",
     costN = 8, costC = 8, costT = 0,
     apply = function(s)
-      s.trend = s.trend + 8
-      s.maxN = s.maxN + 2
-      s.maxC = s.maxC + 2
+      s.trend = s.trend + 16
+      s.maxN = s.maxN + 4
+      s.maxC = s.maxC + 4
       return {
-        { label = "流行", val = 8 },
-        { label = "知名度上限", val = 2 },
-        { label = "コンテンツ上限", val = 2 },
+        { label = "流行", val = 16 },
+        { label = "知名度上限", val = 4 },
+        { label = "コンテンツ上限", val = 4 },
         { text = "差別化成功" },
       }
     end,
@@ -311,11 +312,11 @@ local allEvents = {
     phase = "ops",
     costN = 0, costC = 10, costT = 0,
     apply = function(s)
-      s.maxC = s.maxC + 5
-      s.trend = s.trend + 6
+      s.maxC = s.maxC + 10
+      s.trend = s.trend + 12
       return {
-        { label = "コンテンツ上限", val = 5 },
-        { label = "流行", val = 6 },
+        { label = "コンテンツ上限", val = 10 },
+        { label = "流行", val = 12 },
         { text = "緊急イベント投入" },
       }
     end,
@@ -329,8 +330,8 @@ local devActions = {
     desc = "SNSやメディアで宣伝",
     costN = 5, costC = 0, costT = 0,
     apply = function(s)
-      s.maxN = s.maxN + 1
-      return {{ label = "知名度上限", val = 1 }}
+      s.maxN = s.maxN + 2
+      return {{ label = "知名度上限", val = 2 }}
     end,
   },
   {
@@ -338,8 +339,8 @@ local devActions = {
     desc = "ゲーム内容を充実させる",
     costN = 0, costC = 5, costT = 0,
     apply = function(s)
-      s.maxC = s.maxC + 1
-      return {{ label = "コンテンツ上限", val = 1 }}
+      s.maxC = s.maxC + 2
+      return {{ label = "コンテンツ上限", val = 2 }}
     end,
   },
   {
@@ -347,8 +348,8 @@ local devActions = {
     desc = "システムやエンジンを改良",
     costN = 0, costC = 0, costT = 5,
     apply = function(s)
-      s.maxT = s.maxT + 1
-      return {{ label = "技術力上限", val = 1 }}
+      s.maxT = s.maxT + 2
+      return {{ label = "技術力上限", val = 2 }}
     end,
   },
   {
@@ -359,6 +360,14 @@ local devActions = {
       local item = generateItem()
       table.insert(s.items, item)
       return {{ label = "アイテム獲得", text = item.name }}
+    end,
+  },
+  {
+    name = "何もしない",
+    desc = "様子を見る",
+    costN = 0, costC = 0, costT = 0,
+    apply = function(s)
+      return {{ text = "様子を見た" }}
     end,
   },
 }
@@ -822,11 +831,11 @@ local opsActions = {
     desc = "SNSやメディアで宣伝",
     costN = 5, costC = 0, costT = 0,
     apply = function(s)
-      s.maxN = s.maxN + 1
-      s.trend = s.trend + 5
+      s.maxN = s.maxN + 2
+      s.trend = s.trend + 10
       return {
-        { label = "知名度上限", val = 1 },
-        { label = "流行", val = 5 },
+        { label = "知名度上限", val = 2 },
+        { label = "流行", val = 10 },
       }
     end,
   },
@@ -835,11 +844,11 @@ local opsActions = {
     desc = "新しいゲーム内容を追加",
     costN = 0, costC = 5, costT = 0,
     apply = function(s)
-      s.maxC = s.maxC + 1
-      s.trend = s.trend + 3
+      s.maxC = s.maxC + 2
+      s.trend = s.trend + 6
       return {
-        { label = "コンテンツ上限", val = 1 },
-        { label = "流行", val = 3 },
+        { label = "コンテンツ上限", val = 2 },
+        { label = "流行", val = 6 },
       }
     end,
   },
@@ -848,8 +857,8 @@ local opsActions = {
     desc = "システムを最適化",
     costN = 0, costC = 0, costT = 5,
     apply = function(s)
-      s.maxT = s.maxT + 1
-      return {{ label = "技術力上限", val = 1 }}
+      s.maxT = s.maxT + 2
+      return {{ label = "技術力上限", val = 2 }}
     end,
   },
   {
@@ -860,6 +869,14 @@ local opsActions = {
       local item = generateItem()
       table.insert(s.items, item)
       return {{ label = "アイテム獲得", text = item.name }}
+    end,
+  },
+  {
+    name = "何もしない",
+    desc = "様子を見る",
+    costN = 0, costC = 0, costT = 0,
+    apply = function(s)
+      return {{ text = "様子を見た" }}
     end,
   },
 }
@@ -1344,21 +1361,54 @@ function drawActionSelectScreen()
     idx = idx + 1
   end
 
-  -- アイテム
+  -- アイテム（スクロール表示）
   if #state.items > 0 then
     y = y + 8
     love.graphics.setFont(smallFont)
     love.graphics.setColor(1, 1, 1)
-    boldPrint("【アイテム使用】（行動消費なし）", 50, y)
+    boldPrint("【アイテム使用】（行動消費なし） " .. #state.items .. "個", 50, y)
     y = y + 25
-    love.graphics.setFont(tinyFont)
-    for i, item in ipairs(state.items) do
-      local color = idx == selectedIndex and {1, 1, 0} or {0.5, 1, 1}
-      love.graphics.setColor(color)
-      boldPrint((idx) .. ". " .. item.name .. " (" .. item.desc .. ")", 70, y)
-      y = y + 20
-      idx = idx + 1
+
+    -- スクロールオフセット計算
+    local maxVisibleItems = 4
+    local selectedItemIdx = selectedIndex - #unhandledEvents - #actions
+
+    if selectedItemIdx > 0 and selectedItemIdx <= #state.items then
+      if selectedItemIdx > itemScrollOffset + maxVisibleItems then
+        itemScrollOffset = selectedItemIdx - maxVisibleItems
+      elseif selectedItemIdx <= itemScrollOffset then
+        itemScrollOffset = selectedItemIdx - 1
+      end
+      itemScrollOffset = math.max(0, math.min(itemScrollOffset, math.max(0, #state.items - maxVisibleItems)))
     end
+
+    -- スクロール表示（scissorでクリッピング）
+    local itemAreaY = y
+    love.graphics.setScissor(50, itemAreaY, 710, 80)
+    love.graphics.setFont(tinyFont)
+
+    for i = itemScrollOffset + 1, math.min(itemScrollOffset + maxVisibleItems, #state.items) do
+      local item = state.items[i]
+      local relativeIdx = i - itemScrollOffset
+      local globalIdx = idx + (i - itemScrollOffset - 1)
+      local color = globalIdx == selectedIndex and {1, 1, 0} or {0.5, 1, 1}
+      love.graphics.setColor(color)
+      boldPrint(globalIdx .. ". " .. item.name .. " (" .. item.desc .. ")", 70, itemAreaY + (relativeIdx - 1) * 20)
+    end
+
+    love.graphics.setScissor()
+
+    -- スクロールバー表示
+    if #state.items > maxVisibleItems then
+      love.graphics.setColor(0.3, 0.3, 0.3)
+      love.graphics.rectangle("fill", 760, itemAreaY, 5, 80)
+      love.graphics.setColor(1, 1, 1)
+      local barHeight = 80 * (maxVisibleItems / #state.items)
+      local scrollPercent = itemScrollOffset / (#state.items - maxVisibleItems)
+      love.graphics.rectangle("fill", 760, itemAreaY + scrollPercent * (80 - barHeight), 5, barHeight)
+    end
+
+    idx = idx + #state.items
   end
 
   love.graphics.setFont(tinyFont)
@@ -1408,7 +1458,7 @@ end
 function drawFinalScreen()
   love.graphics.setFont(menuFont)
   love.graphics.setColor(1, 1, 1)
-  boldPrint("60ヶ月完走！", 50, 100)
+  boldPrint("48ヶ月完走！", 50, 100)
 
   love.graphics.setFont(smallFont)
   boldPrint("最終資金: " .. state.money .. "万円", 50, 180)
