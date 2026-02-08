@@ -1291,7 +1291,7 @@ function drawActionSelectScreen()
       local r = lastActionResult[i]
       local text
       if r.text then
-        text = "> " .. r.label .. ": " .. r.text
+        text = "> " .. r.text
       else
         text = "> " .. r.label .. ": " .. (r.val >= 0 and "+" or "") .. r.val .. (r.suffix or "")
       end
