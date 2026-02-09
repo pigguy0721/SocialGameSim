@@ -1,1853 +1,1613 @@
--- ============================================================
--- ソシャゲ運営ローグライク — 借金返済編
--- ============================================================
+-- ソシャゲ運営シミュ（シンプル版）
+-- 仕様: E:\work\helloworld\docs\simple_gacha_sim_spec.md
 
--- ===== 定数 =====
-local FONT_PATH = "fonts/NotoSansJP-Regular.ttf"
-local MAX_STAT = 100
-local MAX_ENERGY = 100
-local START_MONTH = 4  -- 4月スタート
+-- ========================================
+-- 定数
+-- ========================================
+local WINDOW_WIDTH = 800
+local WINDOW_HEIGHT = 600
 
--- フェーズ・経済定数
-local DEV_TURNS = 24
-local INITIAL_DEBT = 5000
-local INTEREST_RATE = 0.03
-local REVENUE_DIVISOR = 700
-local MAINT_USER_DIVISOR = 100
-local MAINT_BASE = 40
-local MAINT_TURN_COEFF = 5
-local AUTO_REPAY_RATIO = 0.30
-local FORCED_EVENT_CHANCE = 0.50
-local CRITICAL_MULTIPLIER = 1.5
-local CRITICAL_BASE_RATE = 0.10
-local CRITICAL_STAT_BONUS = 0.003
-local ENERGY_RECOVERY = 10
+-- ========================================
+-- 設定システム
+-- ========================================
+local config = {
+    maxMonths = 36,
+    initialMoney = 2000,        -- 万円
+    baseActionCost = 100,       -- 万円
+    actionCostMultiplier = 1.4,
 
--- ステータス名
-local statNames = {
-  content  = "コンテンツ力",
-  tech     = "技術力",
-  hype     = "話題性",
-  monetize = "課金圧",
+    -- 炎上システム
+    fireBaseRate = 5,           -- 基礎炎上率(%)
+    fireRatePerAction = 4,      -- 行動ごとの増加率(%)
+    fireMoneyLoss = 0.3,        -- 資金減少率
+    fireUserLoss = 0.15,        -- ユーザ減少率
+
+    -- アイテム効果
+    gachaItemRevenue = 0.10,    -- 収益+10%
+    contentItemRevenue = 0.05,  -- 収益+5%
+    adItemUsers = 0.10,         -- ユーザ+10%
+
+    -- ユーザ変動
+    newUserPerFame = 100,       -- 知名度あたりの新規ユーザ
+    leaveRateBase = 6,          -- 離脱率計算の基礎値
+    leaveRateMultiplier = 0.03, -- 離脱率の倍率
+
+    -- 評価補正
+    ratingMultipliers = {0.5, 0.8, 1.0, 1.3, 1.6},
+
+    -- 初期値
+    initialRating = 3,
+    initialUsers = 1000,
 }
-local statOrder = { "content", "tech", "hype", "monetize" }
 
--- ===== 太字描画ヘルパー =====
--- 1pxずらして2回描画することでBold風にする
-local BOLD_OFFSET = 0.8
+-- デフォルト設定を保存
+local defaultConfig = {}
+for k, v in pairs(config) do
+    if type(v) == "table" then
+        defaultConfig[k] = {}
+        for i, val in ipairs(v) do
+            defaultConfig[k][i] = val
+        end
+    else
+        defaultConfig[k] = v
+    end
+end
 
+-- 設定を保存
+function saveConfig()
+    local content = "-- Game Config\nreturn {\n"
+    for k, v in pairs(config) do
+        if type(v) == "table" then
+            content = content .. "    " .. k .. " = {"
+            for i, val in ipairs(v) do
+                content = content .. val
+                if i < #v then content = content .. ", " end
+            end
+            content = content .. "},\n"
+        else
+            content = content .. "    " .. k .. " = " .. v .. ",\n"
+        end
+    end
+    content = content .. "}\n"
+
+    love.filesystem.write("config.lua", content)
+end
+
+-- 設定を読み込み
+function loadConfig()
+    if love.filesystem.getInfo("config.lua") then
+        local chunk = love.filesystem.load("config.lua")
+        if chunk then
+            local loaded = chunk()
+            for k, v in pairs(loaded) do
+                config[k] = v
+            end
+        end
+    end
+end
+
+-- デフォルト設定に戻す
+function resetConfig()
+    for k, v in pairs(defaultConfig) do
+        if type(v) == "table" then
+            config[k] = {}
+            for i, val in ipairs(v) do
+                config[k][i] = val
+            end
+        else
+            config[k] = v
+        end
+    end
+end
+
+-- ========================================
+-- グローバル変数
+-- ========================================
+local gameState = "title"  -- "title", "settings", "autoplay", "autoplay_result", "game", "gameover", "clear"
+local subState = "month_start"
+local font
+local largeFont
+local smallFont
+local selectedIndex = 1
+local messageTimer = 0
+local currentMessage = ""
+
+-- 設定画面用
+local settingsCategories = {
+    "基本設定",
+    "炎上システム",
+    "アイテム効果",
+    "ユーザ変動",
+    "評価補正"
+}
+local settingsSelectedCategory = 1
+local settingsSelectedItem = 1
+local settingsItems = {}
+
+-- オートプレイ用
+local autoplayState = {
+    running = false,
+    totalRuns = 0,
+    currentRun = 0,
+    results = {},  -- 小規模実行時のみ使用
+    mode = 1,  -- 1=10回, 2=10000回, 3=100万回
+
+    -- リアルタイム統計集計
+    statsAccum = {
+        survived = 0,
+        totalMonths = 0,
+        totalMoney = 0,
+        totalUsers = 0,
+        totalFires = 0,
+        totalRanking = 0,
+        maxMonths = 0,
+        minMonths = 999,
+        maxMoney = -999999,
+        minMoney = 999999,
+        maxUsers = 0,
+        minUsers = 999999,
+        maxRanking = 999,
+        minRanking = 1,
+
+        -- 分布データ（ヒストグラム）
+        monthsDist = {},     -- 月数分布
+        moneyDist = {},      -- 資金分布
+        usersDist = {},      -- ユーザ数分布
+    },
+
+    -- 最終結果統計
+    stats = {
+        survived = 0,
+        survivalRate = 0,
+        avgMonths = 0,
+        avgMoney = 0,
+        avgUsers = 0,
+        avgRanking = 0,
+        avgFires = 0,
+        maxMonths = 0,
+        minMonths = 999,
+        maxMoney = 0,
+        minMoney = 0,
+        maxUsers = 0,
+        minUsers = 0,
+        maxRanking = 999,
+        minRanking = 1,
+        csvFilename = "",
+        statsFilename = "",
+
+        -- 分布データ
+        monthsDist = {},
+        moneyDist = {},
+        usersDist = {},
+    }
+}
+
+-- ========================================
+-- ゲーム状態
+-- ========================================
+local state = {}
+
+function initState()
+    state = {
+        month = 1,
+        money = config.initialMoney,
+
+        -- 成長パラメータ
+        character = 0,
+        tech = 0,
+        fame = 0,
+
+        -- 状態パラメータ
+        rating = config.initialRating,
+        users = config.initialUsers,
+        ranking = 100,
+
+        -- 月内状態
+        actionsThisMonth = 0,
+
+        -- アイテム（1ヶ月寿命）
+        gachaItems = 0,
+        contentItems = 0,
+        adItems = 0,
+
+        -- 行動結果（表示用）
+        lastActionResult = {},
+        fireResult = nil,
+        monthEndResult = {},
+    }
+end
+
+-- ========================================
+-- ヘルパー関数
+-- ========================================
 function boldPrint(text, x, y)
-  love.graphics.print(text, x + BOLD_OFFSET, y)
-  love.graphics.print(text, x, y)
+    love.graphics.print(text, x, y)
+    love.graphics.print(text, x + 0.8, y)
 end
 
 function boldPrintf(text, x, y, limit, align)
-  love.graphics.printf(text, x + BOLD_OFFSET, y, limit, align)
-  love.graphics.printf(text, x, y, limit, align)
+    love.graphics.printf(text, x, y, limit, align)
+    love.graphics.printf(text, x + 0.8, y, limit, align)
 end
 
--- ===== ヘルパー関数 =====
-function addStat(s, key, minVal, maxVal)
-  local gain = math.random(minVal, maxVal)
-  local prev = s[key]
-  s[key] = math.min(MAX_STAT, s[key] + gain)
-  return s[key] - prev
+function formatMoney(amount)
+    return string.format("%d万円", math.floor(amount))
 end
 
-function addStatMult(s, key, minVal, maxVal, mult)
-  local gain = math.random(math.floor(minVal * mult), math.floor(maxVal * mult))
-  local prev = s[key]
-  s[key] = math.min(MAX_STAT, s[key] + gain)
-  return s[key] - prev
+function formatNumber(num)
+    return string.format("%d", math.floor(num))
 end
 
-function addUsers(s, ratio)
-  local gain = math.floor(s.users * ratio)
-  s.users = s.users + gain
-  return gain
+function getRatingStars(rating)
+    return string.rep("★", rating) .. string.rep("☆", 5 - rating)
 end
 
-function loseUsers(s, ratio)
-  local lost = math.floor(s.users * ratio)
-  s.users = math.max(0, s.users - lost)
-  return lost
+-- ========================================
+-- 行動コスト計算
+-- ========================================
+function getActionCost(actionCount)
+    return math.floor(config.baseActionCost * math.pow(config.actionCostMultiplier, actionCount))
 end
 
--- ターン→年月変換
-function turnToDate(turn)
-  local month = ((turn - 1 + START_MONTH - 1) % 12) + 1
-  local year = math.floor((turn - 1 + START_MONTH - 1) / 12) + 1
-  return year, month
-end
-
-function turnToDateStr(turn)
-  local y, m = turnToDate(turn)
-  return string.format("%d年目 %d月", y, m)
-end
-
--- ===== 開発期カード =====
-local devCards = {
-  {
-    name = "キャラデザイン制作",
-    effectDesc = "コンテンツ力 +8~12\n資金 -100万",
-    rarity = "normal",
-    energyCost = 15,
-    critStat = "content",
-    apply = function(s, m)
-      local g = addStatMult(s, "content", 8, 12, m)
-      s.money = s.money - 100
-      return {
-        { label = "コンテンツ力", val = g },
-        { label = "資金", val = -100, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "シナリオ執筆",
-    effectDesc = "コンテンツ力 +10~15",
-    rarity = "normal",
-    energyCost = 25,
-    critStat = "content",
-    apply = function(s, m)
-      local g = addStatMult(s, "content", 10, 15, m)
-      return {
-        { label = "コンテンツ力", val = g },
-      }
-    end,
-  },
-  {
-    name = "サーバー基盤構築",
-    effectDesc = "技術力 +10~15\n資金 -150万",
-    rarity = "normal",
-    energyCost = 15,
-    critStat = "tech",
-    apply = function(s, m)
-      local g = addStatMult(s, "tech", 10, 15, m)
-      s.money = s.money - 150
-      return {
-        { label = "技術力", val = g },
-        { label = "資金", val = -150, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "ティザーPV制作",
-    effectDesc = "話題性 +10~15\n資金 -100万",
-    rarity = "normal",
-    energyCost = 10,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 10, 15, m)
-      s.money = s.money - 100
-      return {
-        { label = "話題性", val = g },
-        { label = "資金", val = -100, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "事前登録キャンペーン",
-    effectDesc = "話題性 +5~8\n事前登録 +500~1000人\n資金 -50万",
-    rarity = "normal",
-    energyCost = 10,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 5, 8, m)
-      local prereg = math.random(math.floor(500 * m), math.floor(1000 * m))
-      s.preregUsers = s.preregUsers + prereg
-      s.money = s.money - 50
-      return {
-        { label = "話題性", val = g },
-        { label = "事前登録", val = prereg, suffix = "人" },
-        { label = "資金", val = -50, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "CBT実施",
-    effectDesc = "技術力 +5~8\nコンテンツ力 +3~5",
-    rarity = "normal",
-    energyCost = 20,
-    critStat = "tech",
-    apply = function(s, m)
-      local g1 = addStatMult(s, "tech", 5, 8, m)
-      local g2 = addStatMult(s, "content", 3, 5, m)
-      return {
-        { label = "技術力", val = g1 },
-        { label = "コンテンツ力", val = g2 },
-      }
-    end,
-  },
-  {
-    name = "公式SNS開設",
-    effectDesc = "話題性 +3~5",
-    rarity = "normal",
-    energyCost = 5,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 3, 5, m)
-      return {
-        { label = "話題性", val = g },
-      }
-    end,
-  },
-  {
-    name = "追加融資",
-    effectDesc = "資金 +1000万\n借金 +1000万",
-    rarity = "rare",
-    energyCost = 0,
-    apply = function(s, m)
-      s.money = s.money + 1000
-      s.debt = s.debt + 1000
-      return {
-        { label = "資金", val = 1000, suffix = "万" },
-        { label = "借金", val = 1000, suffix = "万" },
-      }
-    end,
-  },
+-- ========================================
+-- 行動定義
+-- ========================================
+local actions = {
+    {
+        name = "ガチャ実装",
+        desc = "キャラ↑ 収益アイテム獲得 炎上率:大",
+        execute = function()
+            state.character = state.character + 1
+            state.gachaItems = state.gachaItems + 1
+            return {
+                "キャラ +1",
+                "収益アイテム(ガチャ) を獲得",
+            }
+        end
+    },
+    {
+        name = "コンテンツ実装",
+        desc = "技術力↑ 収益バフアイテム獲得 炎上率:中",
+        execute = function()
+            state.tech = state.tech + 1
+            state.contentItems = state.contentItems + 1
+            return {
+                "技術力 +1",
+                "収益バフアイテム(コンテンツ) を獲得",
+            }
+        end
+    },
+    {
+        name = "広告",
+        desc = "知名度↑ ユーザ増加バフ獲得 炎上率:小",
+        execute = function()
+            state.fame = state.fame + 1
+            state.adItems = state.adItems + 1
+            return {
+                "知名度 +1",
+                "ユーザ増加バフ(広告) を獲得",
+            }
+        end
+    },
 }
 
--- ===== 運営期通常カード =====
-local opsNormalCards = {
-  {
-    name = "新キャラ実装",
-    effectDesc = "コンテンツ力 +5~8\n話題性 +3~5\nガチャ売上あり",
-    rarity = "normal",
-    energyCost = 15,
-    critStat = "content",
-    apply = function(s, m)
-      local g1 = addStatMult(s, "content", 5, 8, m)
-      local g2 = addStatMult(s, "hype", 3, 5, m)
-      local rev = math.floor(s.users * s.monetize / 1500)
-      s.money = s.money + rev
-      return {
-        { label = "コンテンツ力", val = g1 },
-        { label = "話題性", val = g2 },
-        { label = "ガチャ売上", val = rev, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "ストーリー更新",
-    effectDesc = "コンテンツ力 +10~15\n話題性 +3~5\n課金パック売上あり\n資金 -80万",
-    rarity = "normal",
-    energyCost = 25,
-    critStat = "content",
-    apply = function(s, m)
-      local g1 = addStatMult(s, "content", 10, 15, m)
-      local g2 = addStatMult(s, "hype", 3, 5, m)
-      local rev = math.floor(s.users * s.monetize / 1500)
-      s.money = s.money + rev - 80
-      return {
-        { label = "コンテンツ力", val = g1 },
-        { label = "話題性", val = g2 },
-        { label = "パック売上", val = rev, suffix = "万" },
-        { label = "資金", val = -50, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "コラボイベント開催",
-    effectDesc = "話題性 +10~18\nユーザー +10%\nコラボガチャ売上あり\n資金 -200万",
-    rarity = "normal",
-    energyCost = 20,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 10, 18, m)
-      local gu = addUsers(s, 0.10 * m)
-      local rev = math.floor(s.users * s.monetize / 1500)
-      s.money = s.money + rev - 200
-      return {
-        { label = "話題性", val = g },
-        { label = "ユーザー", val = gu, suffix = "人" },
-        { label = "コラボガチャ売上", val = rev, suffix = "万" },
-        { label = "資金", val = -150, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "レイドイベント開催",
-    effectDesc = "コンテンツ力 +3~5\n話題性 +5~8\n周回課金あり",
-    rarity = "normal",
-    energyCost = 20,
-    critStat = "content",
-    apply = function(s, m)
-      local g1 = addStatMult(s, "content", 3, 5, m)
-      local g2 = addStatMult(s, "hype", 5, 8, m)
-      local rev = math.floor(s.users * s.monetize / 1500)
-      s.money = s.money + rev
-      return {
-        { label = "コンテンツ力", val = g1 },
-        { label = "話題性", val = g2 },
-        { label = "周回課金", val = rev, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "復刻イベント開催",
-    effectDesc = "話題性 -2\nユーザー +3%（復帰勢）",
-    rarity = "normal",
-    energyCost = 5,
-    apply = function(s, m)
-      s.hype = math.max(0, s.hype - 2)
-      local gu = addUsers(s, 0.03 * m)
-      return {
-        { label = "話題性", val = -2 },
-        { label = "復帰ユーザー", val = gu, suffix = "人" },
-      }
-    end,
-  },
-  {
-    name = "バグ修正",
-    effectDesc = "技術力 +5~10",
-    rarity = "normal",
-    energyCost = 10,
-    critStat = "tech",
-    apply = function(s, m)
-      local g = addStatMult(s, "tech", 5, 10, m)
-      return {
-        { label = "技術力", val = g },
-      }
-    end,
-  },
-  {
-    name = "サーバー増強",
-    effectDesc = "技術力 +5~8\n資金 -100万",
-    rarity = "normal",
-    energyCost = 10,
-    critStat = "tech",
-    apply = function(s, m)
-      local g = addStatMult(s, "tech", 5, 8, m)
-      s.money = s.money - 100
-      return {
-        { label = "技術力", val = g },
-        { label = "資金", val = -100, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "SNS広報キャンペーン",
-    effectDesc = "話題性 +5~10\n資金 -50万",
-    rarity = "normal",
-    energyCost = 8,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 5, 10, m)
-      s.money = s.money - 50
-      return {
-        { label = "話題性", val = g },
-        { label = "資金", val = -50, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "限定ガチャ投入",
-    effectDesc = "ガチャ売上あり\n課金圧 +8~12\n話題性 -3~5",
-    rarity = "normal",
-    energyCost = 10,
-    critStat = "monetize",
-    apply = function(s, m)
-      local rev = math.floor(s.users * s.monetize / 1500)
-      s.money = s.money + rev
-      local g = addStatMult(s, "monetize", 8, 12, m)
-      local hd = math.random(3, 5)
-      s.hype = math.max(0, s.hype - hd)
-      return {
-        { label = "ガチャ売上", val = rev, suffix = "万" },
-        { label = "課金圧", val = g },
-        { label = "話題性", val = -hd },
-      }
-    end,
-  },
-  {
-    name = "石バラマキ",
-    effectDesc = "課金圧 -5~10\nユーザー +8%\n話題性 +3~5\n資金 -50万",
-    rarity = "normal",
-    energyCost = 5,
-    critStat = "hype",
-    apply = function(s, m)
-      local dec = math.random(5, 10)
-      s.monetize = math.max(0, s.monetize - dec)
-      local gu = addUsers(s, 0.08 * m)
-      local g = addStatMult(s, "hype", 3, 5, m)
-      s.money = s.money - 50
-      return {
-        { label = "課金圧", val = -dec },
-        { label = "ユーザー", val = gu, suffix = "人" },
-        { label = "話題性", val = g },
-        { label = "資金", val = -50, suffix = "万" },
-      }
-    end,
-  },
-}
+-- ========================================
+-- 行動実行
+-- ========================================
+function executeAction(actionIndex)
+    local action = actions[actionIndex]
+    local cost = getActionCost(state.actionsThisMonth)
 
--- ===== 運営期レアカード =====
-local opsRareCards = {
-  {
-    name = "大型アップデート",
-    effectDesc = "コンテンツ力 +15~20\n技術力 +3~5\n話題性 +8~12\n資金 -300万",
-    rarity = "rare",
-    energyCost = 25,
-    critStat = "content",
-    apply = function(s, m)
-      local g1 = addStatMult(s, "content", 15, 20, m)
-      local g2 = addStatMult(s, "tech", 3, 5, m)
-      local g3 = addStatMult(s, "hype", 8, 12, m)
-      s.money = s.money - 300
-      return {
-        { label = "コンテンツ力", val = g1 },
-        { label = "技術力", val = g2 },
-        { label = "話題性", val = g3 },
-        { label = "資金", val = -300, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "有名配信者が紹介",
-    effectDesc = "話題性 +15~25\nユーザー +15%",
-    rarity = "rare",
-    energyCost = 5,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 15, 25, m)
-      local gu = addUsers(s, 0.15 * m)
-      return {
-        { label = "話題性", val = g },
-        { label = "ユーザー", val = gu, suffix = "人" },
-      }
-    end,
-  },
-  {
-    name = "コラボ先からオファー",
-    effectDesc = "話題性 +10~15\nユーザー +10%\n資金 +100万",
-    rarity = "rare",
-    energyCost = 5,
-    critStat = "hype",
-    apply = function(s, m)
-      local g = addStatMult(s, "hype", 10, 15, m)
-      local gu = addUsers(s, 0.10 * m)
-      s.money = s.money + 100
-      return {
-        { label = "話題性", val = g },
-        { label = "ユーザー", val = gu, suffix = "人" },
-        { label = "資金", val = 100, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "福袋販売",
-    effectDesc = "資金 +200万\n話題性 +3~5",
-    rarity = "rare",
-    energyCost = 5,
-    critStat = "monetize",
-    apply = function(s, m)
-      s.money = s.money + math.floor(200 * m)
-      local g = addStatMult(s, "hype", 3, 5, m)
-      return {
-        { label = "資金", val = math.floor(200 * m), suffix = "万" },
-        { label = "話題性", val = g },
-      }
-    end,
-  },
-}
-
--- ===== 強制イベント =====
-local negativeEvents = {
-  {
-    name = "緊急メンテナンス",
-    effectDesc = "ユーザー -5%\n話題性 -5",
-    isNegative = true,
-    condition = function(s) return s.tech < 40 end,
-    apply = function(s)
-      local lost = loseUsers(s, 0.05)
-      s.hype = math.max(0, s.hype - 5)
-      return {
-        { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "話題性", val = -5 },
-      }
-    end,
-  },
-  {
-    name = "ガチャ確率誤表記発覚",
-    effectDesc = "資金 -300万\nユーザー -8%\n話題性 -10",
-    isNegative = true,
-    condition = function(s) return s.monetize > 50 end,
-    apply = function(s)
-      s.money = s.money - 300
-      local lost = loseUsers(s, 0.08)
-      s.hype = math.max(0, s.hype - 10)
-      return {
-        { label = "資金", val = -300, suffix = "万" },
-        { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "話題性", val = -10 },
-      }
-    end,
-  },
-  {
-    name = "公式SNS失言",
-    effectDesc = "話題性 -10",
-    isNegative = true,
-    condition = function(s) return true end,
-    apply = function(s)
-      s.hype = math.max(0, s.hype - 10)
-      return { { label = "話題性", val = -10 } }
-    end,
-  },
-  {
-    name = "競合タイトル登場",
-    effectDesc = "ユーザー -10%\n話題性 -8",
-    isNegative = true,
-    condition = function(s) return s.opsTurn > 6 end,
-    apply = function(s)
-      local lost = loseUsers(s, 0.10)
-      s.hype = math.max(0, s.hype - 8)
-      return {
-        { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "話題性", val = -8 },
-      }
-    end,
-  },
-  {
-    name = "サーバーダウン",
-    effectDesc = "ユーザー -5%\n資金 -100万",
-    isNegative = true,
-    condition = function(s) return s.tech < 40 end,
-    apply = function(s)
-      local lost = loseUsers(s, 0.05)
-      s.money = s.money - 100
-      return {
-        { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "資金", val = -100, suffix = "万" },
-      }
-    end,
-  },
-  {
-    name = "炎上",
-    effectDesc = "ユーザー -8%\n課金圧 -5\n話題性 +5",
-    isNegative = true,
-    condition = function(s) return s.monetize > 50 end,
-    apply = function(s)
-      local lost = loseUsers(s, 0.08)
-      s.monetize = math.max(0, s.monetize - 5)
-      s.hype = math.min(MAX_STAT, s.hype + 5)
-      return {
-        { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "課金圧", val = -5 },
-        { label = "話題性(悪名)", val = 5 },
-      }
-    end,
-  },
-  {
-    name = "チーター横行",
-    effectDesc = "ユーザー -5%\n技術力 -5",
-    isNegative = true,
-    condition = function(s) return s.tech < 35 and s.users > 3000 end,
-    apply = function(s)
-      local lost = loseUsers(s, 0.05)
-      s.tech = math.max(0, s.tech - 5)
-      return {
-        { label = "ユーザー", val = -lost, suffix = "人" },
-        { label = "技術力", val = -5 },
-      }
-    end,
-  },
-  {
-    name = "セルラン圏外転落",
-    effectDesc = "話題性 -15",
-    isNegative = true,
-    condition = function(s) return s.lastRevenue < 150 end,
-    apply = function(s)
-      s.hype = math.max(0, s.hype - 15)
-      return { { label = "話題性", val = -15 } }
-    end,
-  },
-}
-
-local positiveEvents = {
-  {
-    name = "セルラン1位！",
-    effectDesc = "話題性 +20\nユーザー +10%",
-    isNegative = false,
-    condition = function(s) return s.lastRevenue > 500 end,
-    apply = function(s)
-      s.hype = math.min(MAX_STAT, s.hype + 20)
-      local gu = addUsers(s, 0.10)
-      return {
-        { label = "話題性", val = 20 },
-        { label = "ユーザー", val = gu, suffix = "人" },
-      }
-    end,
-  },
-  {
-    name = "Twitterでバズった",
-    effectDesc = "話題性 +15\nユーザー +5%",
-    isNegative = false,
-    condition = function(s) return s.content > 60 end,
-    apply = function(s)
-      s.hype = math.min(MAX_STAT, s.hype + 15)
-      local gu = addUsers(s, 0.05)
-      return {
-        { label = "話題性", val = 15 },
-        { label = "ユーザー", val = gu, suffix = "人" },
-      }
-    end,
-  },
-  {
-    name = "二次創作が増加",
-    effectDesc = "話題性 +10\nコンテンツ力 +5",
-    isNegative = false,
-    condition = function(s) return s.content > 50 and s.hype > 40 end,
-    apply = function(s)
-      s.hype = math.min(MAX_STAT, s.hype + 10)
-      s.content = math.min(MAX_STAT, s.content + 5)
-      return {
-        { label = "話題性", val = 10 },
-        { label = "コンテンツ力", val = 5 },
-      }
-    end,
-  },
-  {
-    name = "ストアフィーチャー",
-    effectDesc = "ユーザー +20%",
-    isNegative = false,
-    condition = function(s) return s.content > 60 and s.tech > 50 end,
-    apply = function(s)
-      local gu = addUsers(s, 0.20)
-      return { { label = "ユーザー", val = gu, suffix = "人" } }
-    end,
-  },
-  {
-    name = "攻略wikiが充実",
-    effectDesc = "ユーザー離脱率が3ターン低下",
-    isNegative = false,
-    condition = function(s) return s.users > 5000 end,
-    apply = function(s)
-      s.churnReduction = 3
-      s.churnReductionAmt = 0.02
-      return { { label = "離脱率低下", val = -2, suffix = "% (3ターン)" } }
-    end,
-  },
-  {
-    name = "投資家から出資",
-    effectDesc = "資金 +300万（借金ではない）",
-    isNegative = false,
-    condition = function(s) return s.users > 8000 and s.money > 0 end,
-    apply = function(s)
-      s.money = s.money + 300
-      return { { label = "資金", val = 300, suffix = "万" } }
-    end,
-  },
-}
-
--- ===== ゲーム状態 =====
-local gameState = "title"
-local subState = "select"
-
-local menu = { items = { "スタート", "終了" }, selected = 1 }
-
-local state = {}
-local stateSnapshot = {}
-local hand = {}
-local selectedCard = 1
-local lastOutcome = {}
-local turnReport = {}
-local releaseResult = nil
-
--- スナップショット取得
-local function takeSnapshot()
-  stateSnapshot = {
-    users = state.users,
-    money = state.money,
-    debt = state.debt,
-    content = state.content,
-    tech = state.tech,
-    hype = state.hype,
-    monetize = state.monetize,
-    energy = state.energy,
-    preregUsers = state.preregUsers,
-  }
-end
-
--- フォント
-local titleFont, menuFont, smallFont, tinyFont
-
--- ===== 初期化 =====
-local function initState()
-  state = {
-    phase      = "dev",
-    turn       = 1,
-    opsTurn    = 0,
-    users      = 0,
-    money      = INITIAL_DEBT,
-    debt       = INITIAL_DEBT,
-    content    = 0,
-    tech       = 0,
-    hype       = 0,
-    monetize   = 0,
-    energy     = MAX_ENERGY,
-    preregUsers = 0,
-    lastRevenue = 0,
-    churnReduction = 0,
-    churnReductionAmt = 0,
-  }
-  selectedCard = 1
-  subState = "select"
-  hand = {}
-  lastOutcome = {}
-  turnReport = {}
-  releaseResult = nil
-end
-
--- ===== 大成功率計算 =====
-local function calculateCriticalRate(card)
-  if not card.critStat then return 0 end
-  local statVal = state[card.critStat] or 0
-  return math.min(0.30, CRITICAL_BASE_RATE + statVal * CRITICAL_STAT_BONUS)
-end
-
--- ===== カード抽選 =====
-local function drawOneCard(exclude)
-  local pool, rarePool
-  if state.phase == "dev" then
-    pool = devCards
-    rarePool = nil
-  else
-    pool = opsNormalCards
-    rarePool = opsRareCards
-  end
-
-  local useRare = rarePool and math.random(100) <= 15
-  local source = useRare and rarePool or pool
-
-  for _ = 1, 10 do
-    local card = source[math.random(#source)]
-    local dup = false
-    for _, ex in ipairs(exclude) do
-      if ex.name == card.name then dup = true; break end
-    end
-    if not dup then return card end
-  end
-  return pool[1]
-end
-
-local function drawHand()
-  hand = {}
-  for i = 1, 3 do
-    hand[i] = drawOneCard(hand)
-  end
-  selectedCard = 1
-end
-
--- ===== 強制イベント抽選 =====
-local function rollForcedEvent()
-  if state.phase ~= "ops" then return nil end
-  if math.random() > FORCED_EVENT_CHANCE then return nil end
-
-  local eligNeg, eligPos = {}, {}
-  for _, e in ipairs(negativeEvents) do
-    if e.condition(state) then table.insert(eligNeg, e) end
-  end
-  for _, e in ipairs(positiveEvents) do
-    if e.condition(state) then table.insert(eligPos, e) end
-  end
-
-  if #eligNeg == 0 and #eligPos == 0 then return nil end
-
-  local pool
-  if #eligNeg == 0 then pool = eligPos
-  elseif #eligPos == 0 then pool = eligNeg
-  elseif math.random() < 0.5 then pool = eligNeg
-  else pool = eligPos
-  end
-
-  return pool[math.random(#pool)]
-end
-
--- ===== ターン開始処理 =====
-local function processTurnStart()
-  local report = {}
-
-  if state.phase == "dev" then
-    -- 開発期: 利子のみ
-    local interest = math.floor(state.debt * INTEREST_RATE)
-    state.money = state.money - interest
-    table.insert(report, { label = "利子", val = -interest, suffix = "万" })
-
-    -- 体力回復
-    local prev = state.energy
-    state.energy = math.min(MAX_ENERGY, state.energy + ENERGY_RECOVERY)
-    local rec = state.energy - prev
-    if rec > 0 then
-      table.insert(report, { label = "体力回復", val = rec })
+    if state.money < cost then
+        return false, "資金不足"
     end
 
-    -- 残りターン表示
-    local remain = DEV_TURNS - state.turn + 1
-    table.insert(report, { label = "リリースまで", val = remain, suffix = "ターン" })
+    state.money = state.money - cost
+    state.actionsThisMonth = state.actionsThisMonth + 1
 
-  elseif state.phase == "ops" then
-    state.opsTurn = state.opsTurn + 1
+    local results = action.execute()
 
-    -- 売上
-    local revenue = math.floor(state.users * state.monetize / REVENUE_DIVISOR)
+    state.lastActionResult = {
+        name = action.name,
+        cost = cost,
+        results = results,
+        newMoney = state.money,
+    }
+
+    return true, nil
+end
+
+-- ========================================
+-- 炎上判定
+-- ========================================
+function checkFire()
+    local fireRate = config.fireBaseRate + (state.actionsThisMonth * config.fireRatePerAction)
+    local roll = math.random(100)
+
+    if roll <= fireRate then
+        local moneyLoss = math.floor(state.money * config.fireMoneyLoss)
+        local userLoss = math.floor(state.users * config.fireUserLoss)
+
+        state.money = state.money - moneyLoss
+        state.rating = math.max(1, state.rating - 1)
+        state.users = math.max(0, state.users - userLoss)
+
+        state.fireResult = {
+            happened = true,
+            rate = fireRate,
+            moneyLoss = moneyLoss,
+            ratingLoss = 1,
+            userLoss = userLoss,
+        }
+
+        return true
+    else
+        state.fireResult = {
+            happened = false,
+            rate = fireRate,
+        }
+        return false
+    end
+end
+
+-- ========================================
+-- 月末処理
+-- ========================================
+function processMonthEnd()
+    local result = {
+        items = {
+            gacha = state.gachaItems,
+            content = state.contentItems,
+            ad = state.adItems,
+        }
+    }
+
+    -- 新規ユーザ
+    local newUsers = state.fame * config.newUserPerFame
+
+    -- 広告バフ適用
+    if state.adItems > 0 then
+        newUsers = math.floor(newUsers * (1 + state.adItems * config.adItemUsers))
+    end
+
+    state.users = state.users + newUsers
+    result.newUsers = newUsers
+
+    -- 離脱ユーザ
+    local leaveRate = (config.leaveRateBase - state.rating) * config.leaveRateMultiplier
+    local leaveUsers = math.floor(state.users * leaveRate)
+    state.users = math.max(0, state.users - leaveUsers)
+    result.leaveUsers = leaveUsers
+    result.leaveRate = leaveRate * 100
+
+    -- 収益計算
+    local ratingMultiplier = config.ratingMultipliers[state.rating] or 1.0
+
+    local revenue = state.users * ratingMultiplier
+
+    -- ガチャアイテムバフ
+    if state.gachaItems > 0 then
+        revenue = revenue * (1 + state.gachaItems * config.gachaItemRevenue)
+    end
+
+    -- コンテンツアイテムバフ
+    if state.contentItems > 0 then
+        revenue = revenue * (1 + state.contentItems * config.contentItemRevenue)
+    end
+
+    revenue = math.floor(revenue / 10000)
     state.money = state.money + revenue
-    state.lastRevenue = revenue
-    table.insert(report, { label = "売上", val = revenue, suffix = "万" })
+    result.revenue = revenue
+    result.ratingMultiplier = ratingMultiplier
 
-    -- 維持費
-    local maint = math.floor(state.users / MAINT_USER_DIVISOR) + MAINT_BASE + state.opsTurn * MAINT_TURN_COEFF
-    state.money = state.money - maint
-    table.insert(report, { label = "維持費", val = -maint, suffix = "万" })
-
-    -- 利子
-    if state.debt > 0 then
-      local interest = math.floor(state.debt * INTEREST_RATE)
-      state.money = state.money - interest
-      table.insert(report, { label = "利子", val = -interest, suffix = "万" })
+    -- セルラン更新
+    if state.users > 100000 then
+        state.ranking = math.random(1, 10)
+    elseif state.users > 50000 then
+        state.ranking = math.random(10, 30)
+    elseif state.users > 10000 then
+        state.ranking = math.random(30, 80)
+    else
+        state.ranking = math.random(80, 150)
     end
 
-    -- 自動返済
-    local net = revenue - maint - math.floor(state.debt * INTEREST_RATE)
-    if net > 0 and state.debt > 0 then
-      local repay = math.min(math.floor(net * AUTO_REPAY_RATIO), state.debt)
-      state.debt = state.debt - repay
-      state.money = state.money - repay
-      table.insert(report, { label = "返済", val = -repay, suffix = "万" })
+    -- アイテム消滅
+    state.gachaItems = 0
+    state.contentItems = 0
+    state.adItems = 0
+
+    -- 行動カウントリセット
+    state.actionsThisMonth = 0
+
+    state.monthEndResult = result
+end
+
+-- ========================================
+-- 次月へ
+-- ========================================
+function advanceMonth()
+    state.month = state.month + 1
+
+    if state.month > config.maxMonths then
+        gameState = "clear"
+        return
     end
 
-    -- 新規流入
-    local inflow = math.floor(state.users * (state.hype / 500))
-    state.users = state.users + inflow
-
-    -- 離脱
-    local baseChurn = 0.07 + state.monetize / 400 - state.content / 1000
-    if state.churnReduction > 0 then
-      baseChurn = baseChurn - state.churnReductionAmt
-      state.churnReduction = state.churnReduction - 1
+    if state.money <= 0 then
+        gameState = "gameover"
+        return
     end
-    local churnRate = math.max(0, baseChurn + state.opsTurn * 0.002)
-    local churn = math.floor(state.users * churnRate)
-    state.users = math.max(0, state.users - churn)
 
-    local netUsers = inflow - churn
-    local sign = netUsers >= 0 and "+" or ""
-    table.insert(report, {
-      label = "ユーザー", val = netUsers, suffix = "人",
-      text = sign .. netUsers .. "人"
+    subState = "month_start"
+    selectedIndex = 1
+end
+
+-- ========================================
+-- オートプレイ
+-- ========================================
+function startAutoplay(mode)
+    autoplayState.mode = mode
+    if mode == 1 then
+        autoplayState.totalRuns = 10
+    elseif mode == 2 then
+        autoplayState.totalRuns = 10000
+    else
+        autoplayState.totalRuns = 1000000
+    end
+    autoplayState.currentRun = 0
+    autoplayState.results = {}
+    autoplayState.running = true
+
+    -- 統計アキュムレータを初期化
+    autoplayState.statsAccum = {
+        survived = 0,
+        totalMonths = 0,
+        totalMoney = 0,
+        totalUsers = 0,
+        totalFires = 0,
+        totalRanking = 0,
+        maxMonths = 0,
+        minMonths = 999,
+        maxMoney = -999999,
+        minMoney = 999999,
+        maxUsers = 0,
+        minUsers = 999999,
+        maxRanking = 999,
+        minRanking = 1,
+
+        -- 分布データ初期化
+        monthsDist = {},
+        moneyDist = {},
+        usersDist = {},
+    }
+
+    -- 月数分布（0-36ヶ月）
+    for i = 0, config.maxMonths do
+        autoplayState.statsAccum.monthsDist[i] = 0
+    end
+
+    -- 資金分布（10区間）
+    for i = 1, 10 do
+        autoplayState.statsAccum.moneyDist[i] = 0
+    end
+
+    -- ユーザ数分布（10区間）
+    for i = 1, 10 do
+        autoplayState.statsAccum.usersDist[i] = 0
+    end
+end
+
+function runOneAutoplayGame()
+    initState()
+
+    local log = {
+        survived = false,
+        months = 0,
+        finalMoney = 0,
+        finalUsers = 0,
+        finalRating = 0,
+        finalRanking = 100,
+        totalActions = 0,
+        fireCount = 0,
+    }
+
+    while state.month <= config.maxMonths and state.money > 0 do
+        -- 簡単なAI戦略：資金がある限り、ランダムに1-3回行動
+        local actionCount = math.random(1, 3)
+
+        for i = 1, actionCount do
+            local cost = getActionCost(state.actionsThisMonth)
+            if state.money >= cost then
+                local actionIndex = math.random(1, 3)
+                executeAction(actionIndex)
+                log.totalActions = log.totalActions + 1
+            else
+                break
+            end
+        end
+
+        -- 炎上判定
+        if checkFire() then
+            if state.fireResult.happened then
+                log.fireCount = log.fireCount + 1
+            end
+        end
+
+        -- 月末処理
+        processMonthEnd()
+
+        log.months = state.month
+
+        -- 次月へ
+        state.month = state.month + 1
+
+        if state.month > config.maxMonths then
+            log.survived = true
+            break
+        end
+
+        if state.money <= 0 then
+            break
+        end
+
+        -- 次月の準備
+        state.actionsThisMonth = 0
+    end
+
+    log.finalMoney = state.money
+    log.finalUsers = state.users
+    log.finalRating = state.rating
+    log.finalRanking = state.ranking
+
+    return log
+end
+
+function updateAutoplay()
+    if not autoplayState.running then return end
+
+    -- 1フレームで複数回実行（高速化）
+    local runsPerFrame = autoplayState.totalRuns > 1000 and 1000 or 10
+
+    for i = 1, runsPerFrame do
+        if autoplayState.currentRun >= autoplayState.totalRuns then
+            autoplayState.running = false
+            saveAutoplayResults()
+            break
+        end
+
+        autoplayState.currentRun = autoplayState.currentRun + 1
+        local result = runOneAutoplayGame()
+
+        -- リアルタイム統計集計
+        local accum = autoplayState.statsAccum
+        if result.survived then accum.survived = accum.survived + 1 end
+        accum.totalMonths = accum.totalMonths + result.months
+        accum.totalMoney = accum.totalMoney + result.finalMoney
+        accum.totalUsers = accum.totalUsers + result.finalUsers
+        accum.totalRanking = accum.totalRanking + result.finalRanking
+        accum.totalFires = accum.totalFires + result.fireCount
+
+        -- 最大/最小
+        accum.maxMonths = math.max(accum.maxMonths, result.months)
+        accum.minMonths = math.min(accum.minMonths, result.months)
+        accum.maxMoney = math.max(accum.maxMoney, result.finalMoney)
+        accum.minMoney = math.min(accum.minMoney, result.finalMoney)
+        accum.maxUsers = math.max(accum.maxUsers, result.finalUsers)
+        accum.minUsers = math.min(accum.minUsers, result.finalUsers)
+        accum.maxRanking = math.max(accum.maxRanking, result.finalRanking)
+        accum.minRanking = math.min(accum.minRanking, result.finalRanking)
+
+        -- 月数分布
+        if accum.monthsDist[result.months] then
+            accum.monthsDist[result.months] = accum.monthsDist[result.months] + 1
+        end
+
+        -- 資金分布（10区間: <0, 0-500, 500-1000, 1000-2000, 2000-3000, 3000-5000, 5000-10000, 10000-20000, 20000-50000, 50000+）
+        local moneyBucket = 1
+        if result.finalMoney < 0 then moneyBucket = 1
+        elseif result.finalMoney < 500 then moneyBucket = 2
+        elseif result.finalMoney < 1000 then moneyBucket = 3
+        elseif result.finalMoney < 2000 then moneyBucket = 4
+        elseif result.finalMoney < 3000 then moneyBucket = 5
+        elseif result.finalMoney < 5000 then moneyBucket = 6
+        elseif result.finalMoney < 10000 then moneyBucket = 7
+        elseif result.finalMoney < 20000 then moneyBucket = 8
+        elseif result.finalMoney < 50000 then moneyBucket = 9
+        else moneyBucket = 10 end
+        accum.moneyDist[moneyBucket] = accum.moneyDist[moneyBucket] + 1
+
+        -- ユーザ数分布（10区間: 0-1k, 1k-5k, 5k-10k, 10k-20k, 20k-50k, 50k-100k, 100k-200k, 200k-500k, 500k-1M, 1M+）
+        local usersBucket = 1
+        if result.finalUsers < 1000 then usersBucket = 1
+        elseif result.finalUsers < 5000 then usersBucket = 2
+        elseif result.finalUsers < 10000 then usersBucket = 3
+        elseif result.finalUsers < 20000 then usersBucket = 4
+        elseif result.finalUsers < 50000 then usersBucket = 5
+        elseif result.finalUsers < 100000 then usersBucket = 6
+        elseif result.finalUsers < 200000 then usersBucket = 7
+        elseif result.finalUsers < 500000 then usersBucket = 8
+        elseif result.finalUsers < 1000000 then usersBucket = 9
+        else usersBucket = 10 end
+        accum.usersDist[usersBucket] = accum.usersDist[usersBucket] + 1
+
+        -- 大規模実行時はサンプリング（最初の1000件のみ保存）
+        if autoplayState.totalRuns <= 10000 or #autoplayState.results < 1000 then
+            table.insert(autoplayState.results, result)
+        end
+    end
+end
+
+function saveAutoplayResults()
+    local timestamp = os.date("%Y%m%d_%H%M%S")
+    local filename = string.format("autoplay_%s.csv", timestamp)
+
+    -- CSV保存（大規模実行時はサンプルのみ）
+    if #autoplayState.results > 0 then
+        local csv = "run,survived,months,finalMoney,finalUsers,finalRating,totalActions,fireCount\n"
+
+        if autoplayState.totalRuns > 10000 then
+            csv = csv .. string.format("# サンプルデータ（最初の%d件）\n", #autoplayState.results)
+        end
+
+        for i, result in ipairs(autoplayState.results) do
+            csv = csv .. string.format("%d,%s,%d,%d,%d,%d,%d,%d\n",
+                i,
+                result.survived and "TRUE" or "FALSE",
+                result.months,
+                result.finalMoney,
+                result.finalUsers,
+                result.finalRating,
+                result.totalActions,
+                result.fireCount
+            )
+        end
+
+        love.filesystem.write(filename, csv)
+    end
+
+    -- 統計情報を計算（リアルタイム集計から）
+    calculateAutoplayStats()
+
+    -- 統計情報をテキストファイルにも保存
+    local statsFilename = string.format("autoplay_stats_%s.txt", timestamp)
+    local statsText = formatAutoplayStatsText()
+    love.filesystem.write(statsFilename, statsText)
+
+    -- ファイル名を保存
+    autoplayState.stats.csvFilename = filename
+    autoplayState.stats.statsFilename = statsFilename
+
+    -- 結果画面に遷移
+    gameState = "autoplay_result"
+    selectedIndex = 1
+end
+
+function calculateAutoplayStats()
+    -- リアルタイム集計された統計を使用
+    local accum = autoplayState.statsAccum
+    local count = autoplayState.totalRuns
+
+    if count == 0 then return end
+
+    autoplayState.stats.survived = accum.survived
+    autoplayState.stats.survivalRate = (accum.survived / count) * 100
+    autoplayState.stats.avgMonths = accum.totalMonths / count
+    autoplayState.stats.avgMoney = accum.totalMoney / count
+    autoplayState.stats.avgUsers = accum.totalUsers / count
+    autoplayState.stats.avgRanking = accum.totalRanking / count
+    autoplayState.stats.avgFires = accum.totalFires / count
+    autoplayState.stats.maxMonths = accum.maxMonths
+    autoplayState.stats.minMonths = accum.minMonths
+    autoplayState.stats.maxMoney = accum.maxMoney
+    autoplayState.stats.minMoney = accum.minMoney
+    autoplayState.stats.maxUsers = accum.maxUsers
+    autoplayState.stats.minUsers = accum.minUsers
+    autoplayState.stats.maxRanking = accum.maxRanking
+    autoplayState.stats.minRanking = accum.minRanking
+    autoplayState.stats.totalRuns = count
+
+    -- 分布データをコピー
+    autoplayState.stats.monthsDist = accum.monthsDist
+    autoplayState.stats.moneyDist = accum.moneyDist
+    autoplayState.stats.usersDist = accum.usersDist
+end
+
+function formatAutoplayStatsText()
+    local s = autoplayState.stats
+    return string.format([[オートプレイ統計結果
+
+実行回数: %d
+生存率: %.2f%% (%d / %d)
+
+生存月数:
+- 平均: %.2f ヶ月
+- 最長: %d ヶ月
+- 最短: %d ヶ月
+
+最終資金:
+- 平均: %.0f 万円
+- 最大: %.0f 万円
+- 最小: %.0f 万円
+
+最終ユーザ数:
+- 平均: %.0f
+- 最大: %.0f
+- 最小: %.0f
+
+最終セルラン:
+- 平均: %.1f 位
+- 最高: %d 位
+- 最低: %d 位
+
+平均炎上回数: %.2f 回
+
+設定:
+- 初期資金: %d万円
+- 基本コスト: %d万円
+- コスト倍率: %.2f
+- 炎上基礎率: %d%%
+- 炎上増加率: %d%%/行動
+]],
+        s.totalRuns,
+        s.survivalRate, s.survived, s.totalRuns,
+        s.avgMonths,
+        s.maxMonths,
+        s.minMonths,
+        s.avgMoney,
+        s.maxMoney,
+        s.minMoney,
+        s.avgUsers,
+        s.maxUsers,
+        s.minUsers,
+        s.avgRanking,
+        s.minRanking,
+        s.maxRanking,
+        s.avgFires,
+        config.initialMoney,
+        config.baseActionCost,
+        config.actionCostMultiplier,
+        config.fireBaseRate,
+        config.fireRatePerAction
+    )
+end
+
+-- ========================================
+-- 設定画面
+-- ========================================
+function buildSettingsItems()
+    settingsItems = {
+        ["基本設定"] = {
+            {name = "最大月数", key = "maxMonths", min = 12, max = 120, step = 6},
+            {name = "初期資金(万円)", key = "initialMoney", min = 500, max = 5000, step = 100},
+            {name = "基本行動コスト", key = "baseActionCost", min = 50, max = 500, step = 10},
+            {name = "コスト倍率", key = "actionCostMultiplier", min = 1.1, max = 2.0, step = 0.1, decimal = true},
+        },
+        ["炎上システム"] = {
+            {name = "基礎炎上率(%)", key = "fireBaseRate", min = 0, max = 20, step = 1},
+            {name = "行動毎増加率(%)", key = "fireRatePerAction", min = 1, max = 10, step = 1},
+            {name = "資金減少率", key = "fireMoneyLoss", min = 0.1, max = 0.5, step = 0.05, decimal = true},
+            {name = "ユーザ減少率", key = "fireUserLoss", min = 0.05, max = 0.3, step = 0.05, decimal = true},
+        },
+        ["アイテム効果"] = {
+            {name = "ガチャ収益率", key = "gachaItemRevenue", min = 0.05, max = 0.30, step = 0.05, decimal = true},
+            {name = "コンテンツ収益率", key = "contentItemRevenue", min = 0.02, max = 0.15, step = 0.01, decimal = true},
+            {name = "広告ユーザ率", key = "adItemUsers", min = 0.05, max = 0.30, step = 0.05, decimal = true},
+        },
+        ["ユーザ変動"] = {
+            {name = "知名度あたり新規", key = "newUserPerFame", min = 50, max = 500, step = 50},
+            {name = "初期ユーザ数", key = "initialUsers", min = 500, max = 5000, step = 500},
+            {name = "離脱率基礎値", key = "leaveRateBase", min = 4, max = 10, step = 1},
+            {name = "離脱率倍率", key = "leaveRateMultiplier", min = 0.01, max = 0.10, step = 0.01, decimal = true},
+        },
+        ["評価補正"] = {
+            {name = "★1倍率", key = "ratingMultipliers", index = 1, min = 0.3, max = 1.0, step = 0.1, decimal = true},
+            {name = "★2倍率", key = "ratingMultipliers", index = 2, min = 0.5, max = 1.2, step = 0.1, decimal = true},
+            {name = "★3倍率", key = "ratingMultipliers", index = 3, min = 0.8, max = 1.5, step = 0.1, decimal = true},
+            {name = "★4倍率", key = "ratingMultipliers", index = 4, min = 1.0, max = 2.0, step = 0.1, decimal = true},
+            {name = "★5倍率", key = "ratingMultipliers", index = 5, min = 1.3, max = 2.5, step = 0.1, decimal = true},
+        },
+    }
+end
+
+function adjustSetting(item, direction)
+    local value
+    if item.index then
+        value = config[item.key][item.index]
+    else
+        value = config[item.key]
+    end
+
+    value = value + (item.step * direction)
+    value = math.max(item.min, math.min(item.max, value))
+
+    if item.decimal then
+        value = math.floor(value * 100 + 0.5) / 100
+    else
+        value = math.floor(value + 0.5)
+    end
+
+    if item.index then
+        config[item.key][item.index] = value
+    else
+        config[item.key] = value
+    end
+end
+
+-- ========================================
+-- Love2D コールバック
+-- ========================================
+function love.load()
+    love.window.setTitle("ソシャゲ運営シミュ")
+    love.window.setMode(WINDOW_WIDTH, WINDOW_HEIGHT, {
+        resizable = false,
+        minwidth = WINDOW_WIDTH,
+        minheight = WINDOW_HEIGHT,
     })
 
-    -- 話題性減衰
-    local hypeDecay = 5 + math.floor((state.opsTurn - 1) / 8)
-    hypeDecay = math.min(hypeDecay, state.hype)
-    state.hype = math.max(0, state.hype - hypeDecay)
-    if hypeDecay > 0 then
-      table.insert(report, { label = "話題性減衰", val = -hypeDecay })
-    end
+    font = love.graphics.newFont("fonts/NotoSansJP-Regular.ttf", 18)
+    largeFont = love.graphics.newFont("fonts/NotoSansJP-Regular.ttf", 32)
+    smallFont = love.graphics.newFont("fonts/NotoSansJP-Regular.ttf", 14)
+    love.graphics.setFont(font)
 
-    -- コンテンツ力減衰（マンネリ化）
-    local contentDecay = 2 + math.floor((state.opsTurn - 1) / 12)
-    contentDecay = math.min(contentDecay, state.content)
-    state.content = math.max(0, state.content - contentDecay)
-    if contentDecay > 0 then
-      table.insert(report, { label = "マンネリ化", val = -contentDecay })
-    end
+    math.randomseed(os.time())
 
-    -- 体力回復
-    local prev = state.energy
-    state.energy = math.min(MAX_ENERGY, state.energy + ENERGY_RECOVERY)
-    local rec = state.energy - prev
-    if rec > 0 then
-      table.insert(report, { label = "体力回復", val = rec })
-    end
-  end
-
-  turnReport = report
-end
-
--- ===== リリース判定 =====
-local function executeRelease()
-  local baseUsers = state.content * 100 + state.hype * 50 + state.preregUsers
-
-  local bonus = 1.0
-  if state.content >= 50 and state.tech >= 40 then
-    bonus = 1.3
-  elseif state.content >= 30 and state.tech >= 20 then
-    bonus = 1.0
-  elseif state.content < 20 or state.tech < 15 then
-    bonus = 0.5
-  else
-    bonus = 0.7
-  end
-
-  state.users = math.max(500, math.floor(baseUsers * bonus))
-  state.phase = "ops"
-  state.opsTurn = 0
-  if state.monetize < 10 then state.monetize = 10 end
-
-  releaseResult = {
-    baseUsers = math.floor(baseUsers),
-    bonus = bonus,
-    finalUsers = state.users,
-    content = state.content,
-    tech = state.tech,
-    hype = state.hype,
-    preregUsers = state.preregUsers,
-    money = state.money,
-    debt = state.debt,
-  }
-  return releaseResult
-end
-
--- ===== カード実行 =====
-local function executeCard(card)
-  takeSnapshot()
-  local outcome = {
-    cardName = card.name,
-    rarity = card.rarity,
-    success = true,
-    critical = false,
-    results = {},
-    message = "",
-  }
-
-  -- 大成功判定
-  local critRate = calculateCriticalRate(card)
-  local isCritical = math.random() < critRate
-  local mult = isCritical and CRITICAL_MULTIPLIER or 1.0
-
-  outcome.results = card.apply(state, mult)
-  if isCritical then
-    outcome.critical = true
-    outcome.message = "大成功！"
-  else
-    outcome.message = "成功！"
-  end
-
-  -- 体力消費
-  state.energy = math.max(0, state.energy - card.energyCost)
-  if card.energyCost > 0 then
-    table.insert(outcome.results, { label = "体力", val = -card.energyCost })
-  end
-
-  return outcome
-end
-
--- ===== 休養実行 =====
-local function executeRest()
-  takeSnapshot()
-  local prev = state.energy
-  state.energy = math.min(MAX_ENERGY, state.energy + 30)
-  local gain = state.energy - prev
-  return {
-    cardName = "休養",
-    rarity = "rest",
-    success = true,
-    critical = false,
-    results = { { label = "体力", val = gain } },
-    message = "ゆっくり休んだ！",
-  }
-end
-
--- ===== 勝敗判定 =====
-local function checkGameOver()
-  if state.phase == "dev" then
-    return state.money <= 0
-  else
-    return state.users <= 0 or state.money <= 0
-  end
-end
-
-local function checkWin()
-  return state.phase == "ops" and state.debt <= 0
-end
-
-local function getGameOverReason()
-  if state.phase == "dev" then
-    return "開発資金が尽きた..."
-  elseif state.users <= 0 and state.money <= 0 then
-    return "ユーザーゼロ＆資金枯渇..."
-  elseif state.users <= 0 then
-    return "ユーザーがいなくなった..."
-  else
-    return "資金が尽きた..."
-  end
-end
-
--- ===== 次ターン遷移ヘルパー =====
-local function advanceToNextTurn()
-  state.turn = state.turn + 1
-
-  -- 開発期→運営期への遷移チェック
-  if state.phase == "dev" and state.turn > DEV_TURNS then
-    executeRelease()
-    subState = "release"
-    return
-  end
-
-  processTurnStart()
-
-  if checkGameOver() then
-    gameState = "gameover"
-    return
-  end
-
-  if checkWin() then
-    subState = "win"
-    return
-  end
-
-  -- 強制イベント判定
-  local event = rollForcedEvent()
-  if event then
-    takeSnapshot()
-    lastOutcome = {
-      cardName = event.name,
-      rarity = event.isNegative and "disaster" or "lucky",
-      success = true,
-      critical = false,
-      results = event.apply(state),
-      message = event.isNegative and "発生！" or "朗報！",
-    }
-    subState = "forced_event"
-    return
-  end
-
-  drawHand()
-  subState = "select"
-end
-
--- ===== Love2D コールバック =====
-function love.load()
-  love.window.setTitle("ソシャゲ運営ローグライク — 借金返済編")
-  love.window.setMode(800, 600, { resizable = true, fullscreen = false })
-  love.graphics.setDefaultFilter("linear", "linear")
-
-  math.randomseed(os.time())
-  math.random(); math.random(); math.random()
-
-  titleFont = love.graphics.newFont(FONT_PATH, 32)
-  menuFont  = love.graphics.newFont(FONT_PATH, 22)
-  smallFont = love.graphics.newFont(FONT_PATH, 16)
-  tinyFont  = love.graphics.newFont(FONT_PATH, 13)
-
-  initState()
+    loadConfig()
+    buildSettingsItems()
+    initState()
 end
 
 function love.keypressed(key)
-  -- F11でボーダーレスフルスクリーン切り替え
-  if key == "f11" then
-    isBorderlessFullscreen = not isBorderlessFullscreen
-    if isBorderlessFullscreen then
-      local _, _, flags = love.window.getMode()
-      local dw, dh = love.window.getDesktopDimensions(flags.display or 1)
-      love.window.setMode(dw, dh, { resizable = false, borderless = true, fullscreen = false })
-      love.window.setPosition(0, 0, flags.display or 1)
-    else
-      love.window.setMode(800, 600, { resizable = true, borderless = false, fullscreen = false })
-    end
-    return
-  end
-
-  if gameState == "title" then
-    if key == "up" then
-      menu.selected = menu.selected - 1
-      if menu.selected < 1 then menu.selected = #menu.items end
-    elseif key == "down" then
-      menu.selected = menu.selected + 1
-      if menu.selected > #menu.items then menu.selected = 1 end
-    elseif key == "return" or key == "space" then
-      if menu.selected == 1 then
-        initState()
-        processTurnStart()
-        drawHand()
-        gameState = "game"
-        subState = "select"
-      elseif menu.selected == 2 then
-        love.event.quit()
-      end
+    if key == "escape" then
+        if gameState == "title" then
+            love.event.quit()
+        elseif gameState == "settings" or gameState == "autoplay" or gameState == "autoplay_result" then
+            gameState = "title"
+            selectedIndex = 1
+        else
+            gameState = "title"
+            initState()
+        end
+        return
     end
 
-  elseif gameState == "game" then
-    if subState == "select" then
-      if key == "left" then
-        if selectedCard == 4 then selectedCard = 3
-        else
-          selectedCard = selectedCard - 1
-          if selectedCard < 1 then selectedCard = 3 end
+    if gameState == "title" then
+        if key == "up" then
+            selectedIndex = math.max(1, selectedIndex - 1)
+        elseif key == "down" then
+            selectedIndex = math.min(4, selectedIndex + 1)
+        elseif key == "space" or key == "return" then
+            if selectedIndex == 1 then
+                gameState = "game"
+                subState = "month_start"
+                initState()
+                selectedIndex = 1
+            elseif selectedIndex == 2 then
+                gameState = "settings"
+                settingsSelectedCategory = 1
+                settingsSelectedItem = 1
+            elseif selectedIndex == 3 then
+                gameState = "autoplay"
+                selectedIndex = 1
+            elseif selectedIndex == 4 then
+                love.event.quit()
+            end
         end
-      elseif key == "right" then
-        if selectedCard == 4 then selectedCard = 1
-        else
-          selectedCard = selectedCard + 1
-          if selectedCard > 3 then selectedCard = 1 end
-        end
-      elseif key == "down" then
-        selectedCard = 4
-      elseif key == "up" then
-        if selectedCard == 4 then selectedCard = 2 end
-      elseif key == "return" or key == "space" then
-        if selectedCard == 4 then
-          lastOutcome = executeRest()
-          subState = "outcome"
-        else
-          local card = hand[selectedCard]
-          if state.energy < card.energyCost and card.energyCost > 0 then
-            return
-          end
-          lastOutcome = executeCard(card)
-          subState = "outcome"
-        end
-      elseif key == "escape" then
-        gameState = "title"
-        menu.selected = 1
-      end
 
-    elseif subState == "outcome" then
-      if key == "return" or key == "space" then
-        if checkGameOver() then
-          gameState = "gameover"
-        elseif checkWin() then
-          subState = "win"
-        else
-          advanceToNextTurn()
-        end
-      end
+    elseif gameState == "settings" then
+        local category = settingsCategories[settingsSelectedCategory]
+        local items = settingsItems[category]
 
-    elseif subState == "forced_event" then
-      if key == "return" or key == "space" then
-        if checkGameOver() then
-          gameState = "gameover"
-        elseif checkWin() then
-          subState = "win"
-        else
-          drawHand()
-          subState = "select"
+        if key == "up" then
+            settingsSelectedItem = math.max(1, settingsSelectedItem - 1)
+        elseif key == "down" then
+            settingsSelectedItem = math.min(#items + 2, settingsSelectedItem + 1)
+        elseif key == "left" then
+            if settingsSelectedItem <= #items then
+                adjustSetting(items[settingsSelectedItem], -1)
+            elseif settingsSelectedItem == #items + 1 then
+                settingsSelectedCategory = math.max(1, settingsSelectedCategory - 1)
+                settingsSelectedItem = 1
+            end
+        elseif key == "right" then
+            if settingsSelectedItem <= #items then
+                adjustSetting(items[settingsSelectedItem], 1)
+            elseif settingsSelectedItem == #items + 1 then
+                settingsSelectedCategory = math.min(#settingsCategories, settingsSelectedCategory + 1)
+                settingsSelectedItem = 1
+            end
+        elseif key == "space" or key == "return" then
+            if settingsSelectedItem == #items + 1 then
+                -- カテゴリ切替
+            elseif settingsSelectedItem == #items + 2 then
+                -- 保存して戻る
+                saveConfig()
+                gameState = "title"
+                selectedIndex = 1
+            end
+        elseif key == "r" then
+            resetConfig()
         end
-      end
 
-    elseif subState == "release" then
-      if key == "return" or key == "space" then
-        processTurnStart()
-        local event = rollForcedEvent()
-        if event then
-          takeSnapshot()
-          lastOutcome = {
-            cardName = event.name,
-            rarity = event.isNegative and "disaster" or "lucky",
-            success = true,
-            critical = false,
-            results = event.apply(state),
-            message = event.isNegative and "発生！" or "朗報！",
-          }
-          subState = "forced_event"
-        else
-          drawHand()
-          subState = "select"
+    elseif gameState == "autoplay" then
+        if not autoplayState.running then
+            if key == "up" then
+                selectedIndex = math.max(1, selectedIndex - 1)
+            elseif key == "down" then
+                selectedIndex = math.min(4, selectedIndex + 1)
+            elseif key == "space" or key == "return" then
+                if selectedIndex <= 3 then
+                    startAutoplay(selectedIndex)
+                else
+                    gameState = "title"
+                    selectedIndex = 1
+                end
+            end
         end
-      end
 
-    elseif subState == "win" then
-      if key == "return" or key == "space" then
-        gameState = "title"
-        menu.selected = 1
-      end
+    elseif gameState == "autoplay_result" then
+        if key == "space" or key == "return" then
+            gameState = "title"
+            selectedIndex = 1
+        elseif key == "s" then
+            -- 統計情報を再表示（コンソールまたはメッセージ）
+            currentMessage = "統計: " .. autoplayState.stats.csvFilename
+            messageTimer = 5
+        end
+
+    elseif gameState == "game" then
+        if subState == "month_start" then
+            if key == "space" or key == "return" then
+                subState = "action_select"
+                selectedIndex = 1
+            end
+
+        elseif subState == "action_select" then
+            if key == "up" then
+                selectedIndex = math.max(1, selectedIndex - 1)
+            elseif key == "down" then
+                selectedIndex = math.min(4, selectedIndex + 1)
+            elseif key == "space" or key == "return" then
+                if selectedIndex == 4 then
+                    subState = "fire_check"
+                    checkFire()
+                else
+                    local success, error = executeAction(selectedIndex)
+                    if success then
+                        subState = "action_result"
+                    else
+                        currentMessage = error or "実行失敗"
+                        messageTimer = 2
+                    end
+                end
+            end
+
+        elseif subState == "action_result" then
+            if key == "space" or key == "return" then
+                subState = "action_select"
+                selectedIndex = 1
+            end
+
+        elseif subState == "fire_check" then
+            if key == "space" or key == "return" then
+                processMonthEnd()
+                subState = "month_end"
+            end
+
+        elseif subState == "month_end" then
+            if key == "space" or key == "return" then
+                advanceMonth()
+            end
+        end
+
+    elseif gameState == "gameover" or gameState == "clear" then
+        if key == "space" or key == "return" then
+            gameState = "title"
+            initState()
+        end
     end
-
-  elseif gameState == "gameover" then
-    if key == "return" or key == "space" then
-      gameState = "title"
-      menu.selected = 1
-    end
-  end
 end
 
 function love.update(dt)
-end
+    if messageTimer > 0 then
+        messageTimer = messageTimer - dt
+        if messageTimer < 0 then
+            messageTimer = 0
+            currentMessage = ""
+        end
+    end
 
--- ===== 描画 =====
-local BASE_W, BASE_H = 800, 600
-local isBorderlessFullscreen = false
+    if gameState == "autoplay" then
+        updateAutoplay()
+    end
+end
 
 function love.draw()
-  local realW, realH = love.graphics.getDimensions()
-  local scaleX = realW / BASE_W
-  local scaleY = realH / BASE_H
-  local scale = math.min(scaleX, scaleY)
-  local offsetX = (realW - BASE_W * scale) / 2
-  local offsetY = (realH - BASE_H * scale) / 2
+    love.graphics.clear(0.1, 0.1, 0.15)
 
-  love.graphics.push()
-  love.graphics.translate(offsetX, offsetY)
-  love.graphics.scale(scale, scale)
-
-  if gameState == "title" then
-    drawTitleScreen()
-  elseif gameState == "game" then
-    if subState == "select" then
-      drawSelectScreen()
-    elseif subState == "outcome" then
-      drawOutcomeScreen()
-    elseif subState == "forced_event" then
-      drawForcedEventScreen()
-    elseif subState == "release" then
-      drawReleaseScreen()
-    elseif subState == "win" then
-      drawWinScreen()
+    if gameState == "title" then
+        drawTitleScreen()
+    elseif gameState == "settings" then
+        drawSettingsScreen()
+    elseif gameState == "autoplay" then
+        drawAutoplayScreen()
+    elseif gameState == "autoplay_result" then
+        drawAutoplayResultScreen()
+    elseif gameState == "game" then
+        drawGameScreen()
+    elseif gameState == "gameover" then
+        drawGameOverScreen()
+    elseif gameState == "clear" then
+        drawClearScreen()
     end
-  elseif gameState == "gameover" then
-    drawGameOverScreen()
-  end
 
-  love.graphics.pop()
-
-  -- レターボックス
-  if offsetX > 0 then
-    love.graphics.setColor(0, 0, 0)
-    love.graphics.rectangle("fill", 0, 0, offsetX, realH)
-    love.graphics.rectangle("fill", realW - offsetX, 0, offsetX, realH)
-  end
-  if offsetY > 0 then
-    love.graphics.setColor(0, 0, 0)
-    love.graphics.rectangle("fill", 0, 0, realW, offsetY)
-    love.graphics.rectangle("fill", 0, realH - offsetY, realW, offsetY)
-  end
+    -- メッセージ表示
+    if messageTimer > 0 then
+        love.graphics.setColor(1, 1, 0.3)
+        boldPrintf(currentMessage, 0, WINDOW_HEIGHT - 40, WINDOW_WIDTH, "center")
+        love.graphics.setColor(1, 1, 1)
+    end
 end
 
--- ===== 描画: タイトル =====
+-- ========================================
+-- 描画関数
+-- ========================================
 function drawTitleScreen()
-  local w, h = BASE_W, BASE_H
-  love.graphics.clear(0.06, 0.06, 0.12)
+    love.graphics.setFont(largeFont)
+    love.graphics.setColor(1, 1, 0.5)
+    boldPrintf("ソシャゲ運営シミュ", 0, 120, WINDOW_WIDTH, "center")
 
-  love.graphics.setFont(titleFont)
-  love.graphics.setColor(1, 0.4, 0.4)
-  boldPrintf("ソシャゲ運営ローグライク", 0, h * 0.15, w, "center")
-
-  love.graphics.setFont(menuFont)
-  love.graphics.setColor(1, 0.85, 0.3)
-  boldPrintf("— 借金返済編 —", 0, h * 0.15 + 45, w, "center")
-
-  love.graphics.setFont(smallFont)
-  love.graphics.setColor(0.6, 0.6, 0.7)
-  boldPrintf("借金してソシャゲを作り、運営して完済せよ！", 0, h * 0.15 + 80, w, "center")
-
-  love.graphics.setFont(tinyFont)
-  love.graphics.setColor(0.5, 0.5, 0.6)
-  boldPrintf(
-    string.format("開発期%dヶ月 → リリース → 運営期（借金%d万を返済）", DEV_TURNS, INITIAL_DEBT),
-    0, h * 0.15 + 105, w, "center"
-  )
-
-  love.graphics.setFont(menuFont)
-  for i, item in ipairs(menu.items) do
-    local y = h * 0.55 + (i - 1) * 45
-    if i == menu.selected then
-      love.graphics.setColor(1, 1, 0)
-      boldPrintf("> " .. item .. " <", 0, y, w, "center")
-    else
-      love.graphics.setColor(0.7, 0.7, 0.7)
-      boldPrintf(item, 0, y, w, "center")
-    end
-  end
-
-  love.graphics.setFont(tinyFont)
-  love.graphics.setColor(0.4, 0.4, 0.4)
-  boldPrintf("↑↓: 選択  Enter: 決定", 0, h - 30, w, "center")
-end
-
--- ===== 描画: カード選択画面 =====
-function drawSelectScreen()
-  local w = BASE_W
-  love.graphics.clear(0.08, 0.08, 0.14)
-
-  love.graphics.setFont(smallFont)
-
-  -- フェーズ + ターン
-  local phaseStr = state.phase == "dev" and "【開発期】" or "【運営期】"
-  love.graphics.setColor(state.phase == "dev" and {0.4, 0.8, 1} or {0.4, 1, 0.6})
-  boldPrint(phaseStr .. " " .. turnToDateStr(state.turn), 15, 8)
-
-  -- ユーザー or 事前登録
-  if state.phase == "dev" then
-    love.graphics.setColor(0.4, 0.9, 1)
-    boldPrint(string.format("事前登録: %d人", state.preregUsers), 250, 8)
-  else
-    love.graphics.setColor(0.4, 0.9, 1)
-    boldPrint(string.format("ユーザー: %d人", state.users), 250, 8)
-  end
-
-  -- 資金
-  local moneyColor = state.money < 200 and {1, 0.3, 0.3} or {1, 0.9, 0.3}
-  love.graphics.setColor(moneyColor)
-  boldPrint(string.format("資金: %d万", state.money), 440, 8)
-
-  -- 借金
-  if state.debt > 0 then
-    love.graphics.setColor(1, 0.4, 0.4)
-    boldPrint(string.format("借金: %d万", state.debt), 580, 8)
-  else
-    love.graphics.setColor(0.4, 1, 0.4)
-    boldPrint("借金: 完済！", 580, 8)
-  end
-
-  -- 区切り
-  love.graphics.setColor(0.25, 0.25, 0.35)
-  love.graphics.line(10, 32, w - 10, 32)
-
-  -- 4ステータス + 体力
-  love.graphics.setFont(tinyFont)
-  local sx = 15
-  for i, key in ipairs(statOrder) do
-    local x = sx + (i - 1) * 140
-    drawStatMini(x, 38, statNames[key], state[key], MAX_STAT)
-  end
-  drawBarSimple(575, 36, 90, 14, state.energy, MAX_ENERGY, "体力", {0.3, 0.8, 0.3})
-
-  -- 区切り
-  love.graphics.setColor(0.25, 0.25, 0.35)
-  love.graphics.line(10, 56, w - 10, 56)
-
-  -- 収支レポート
-  love.graphics.setFont(tinyFont)
-  local ry = 61
-  love.graphics.setColor(0.6, 0.6, 0.7)
-  boldPrint("【今月】", 15, ry)
-  local rx = 75
-  for _, r in ipairs(turnReport) do
-    local text
-    if r.text then
-      text = r.label .. ": " .. r.text
-    else
-      local s = r.val >= 0 and "+" or ""
-      text = r.label .. " " .. s .. r.val .. (r.suffix or "")
-    end
-    if r.val >= 0 then
-      love.graphics.setColor(0.4, 0.9, 0.5)
-    else
-      love.graphics.setColor(1, 0.5, 0.4)
-    end
-    boldPrint(text, rx, ry)
-    rx = rx + tinyFont:getWidth(text) + 12
-    if rx > w - 60 then
-      rx = 75
-      ry = ry + 16
-    end
-  end
-
-  -- 区切り
-  local cardTop = 92
-  love.graphics.setColor(0.25, 0.25, 0.35)
-  love.graphics.line(10, cardTop - 4, w - 10, cardTop - 4)
-
-  -- カード3枚
-  love.graphics.setFont(tinyFont)
-  love.graphics.setColor(0.9, 0.9, 1)
-  boldPrint("【行動カードを選べ】", 15, cardTop)
-
-  local cardW = 230
-  local cardH = 390
-  local gap = 20
-  local totalW = cardW * 3 + gap * 2
-  local startX = (w - totalW) / 2
-  local cardY = cardTop + 20
-
-  for i, card in ipairs(hand) do
-    local cx = startX + (i - 1) * (cardW + gap)
-    local isSelected = (i == selectedCard)
-    local canUse = card.energyCost == 0 or state.energy >= card.energyCost
-    drawCard(cx, cardY, cardW, cardH, card, isSelected, canUse)
-  end
-
-  -- 休養ボタン
-  local restY = cardY + cardH + 8
-  local restW = totalW
-  local restH = 36
-  local restX = startX
-  local restSelected = (selectedCard == 4)
-
-  love.graphics.setColor(restSelected and {0.18, 0.25, 0.18} or {0.12, 0.15, 0.12})
-  love.graphics.rectangle("fill", restX, restY, restW, restH, 6, 6)
-
-  love.graphics.setLineWidth(restSelected and 3 or 1)
-  love.graphics.setColor(restSelected and {0.4, 1, 0.4} or {0.3, 0.5, 0.3})
-  love.graphics.rectangle("line", restX, restY, restW, restH, 6, 6)
-
-  love.graphics.setFont(smallFont)
-  love.graphics.setColor(restSelected and {0.4, 1, 0.4} or {0.5, 0.7, 0.5})
-  boldPrintf("↓ 休養（体力 +30）", restX, restY + 8, restW, "center")
-
-  -- 操作説明
-  love.graphics.setFont(tinyFont)
-  love.graphics.setColor(0.4, 0.4, 0.5)
-  boldPrintf("←→: カード選択  ↓: 休養  Enter: 決定  Esc: タイトル", 0, 580, w, "center")
-end
-
--- ===== 描画: カード1枚 =====
-function drawCard(x, y, w, h, card, isSelected, canUse)
-  local borderColor
-  if card.rarity == "rare" then
-    borderColor = {1, 0.85, 0.2}
-  else
-    borderColor = {0.5, 0.5, 0.7}
-  end
-
-  local bgColor
-  if isSelected then
-    bgColor = {0.18, 0.18, 0.3}
-  else
-    bgColor = {0.12, 0.12, 0.2}
-  end
-  if not canUse then
-    bgColor = {0.08, 0.08, 0.1}
-  end
-
-  love.graphics.setColor(bgColor)
-  love.graphics.rectangle("fill", x, y, w, h, 8, 8)
-
-  love.graphics.setLineWidth(isSelected and 3 or 1)
-  love.graphics.setColor(isSelected and {1, 1, 0.5} or borderColor)
-  love.graphics.rectangle("line", x, y, w, h, 8, 8)
-
-  -- レアリティラベル
-  love.graphics.setFont(tinyFont)
-  if card.rarity == "rare" then
-    love.graphics.setColor(1, 0.85, 0.2)
-    boldPrintf("★ レア", x, y + 6, w, "center")
-  end
-
-  -- カード名
-  love.graphics.setFont(menuFont)
-  if not canUse then
-    love.graphics.setColor(0.4, 0.4, 0.4)
-  elseif card.rarity == "rare" then
-    love.graphics.setColor(1, 0.95, 0.7)
-  else
+    love.graphics.setFont(font)
     love.graphics.setColor(1, 1, 1)
-  end
-  boldPrintf(card.name, x + 5, y + 24, w - 10, "center")
+    boldPrintf("シンプル版", 0, 180, WINDOW_WIDTH, "center")
 
-  -- 区切り線
-  love.graphics.setColor(borderColor[1], borderColor[2], borderColor[3], 0.3)
-  love.graphics.line(x + 10, y + 54, x + w - 10, y + 54)
+    local y = 260
+    local menuItems = {"ゲーム開始", "ゲーム設定", "オートプレイ", "終了"}
 
-  -- 効果テキスト
-  love.graphics.setFont(tinyFont)
-  love.graphics.setColor(not canUse and {0.4, 0.4, 0.4} or {0.7, 0.9, 1})
-  boldPrintf(card.effectDesc, x + 10, y + 62, w - 20, "center")
-
-  -- 大成功率
-  if card.critStat then
-    local critRate = math.floor(calculateCriticalRate(card) * 100)
-    love.graphics.setFont(tinyFont)
-    love.graphics.setColor(1, 0.85, 0.3)
-    boldPrintf(string.format("大成功率 %d%%", critRate), x, y + h - 55, w, "center")
-  end
-
-  -- 体力不足
-  if not canUse then
-    love.graphics.setFont(tinyFont)
-    love.graphics.setColor(1, 0.3, 0.3)
-    boldPrintf("体力不足！", x, y + h - 38, w, "center")
-  end
-
-  -- 体力コスト
-  if card.energyCost > 0 then
-    love.graphics.setFont(tinyFont)
-    love.graphics.setColor(0.6, 0.6, 0.6)
-    boldPrintf(string.format("体力 -%d", card.energyCost), x, y + h - 22, w, "center")
-  end
-end
-
--- ===== 描画: 結果画面 =====
-function drawOutcomeScreen()
-  local w, h = BASE_W, BASE_H
-  love.graphics.clear(0.08, 0.08, 0.14)
-
-  local boxX, boxY, boxW, boxH = 60, 20, w - 120, h - 40
-  love.graphics.setColor(0.12, 0.12, 0.22)
-  love.graphics.rectangle("fill", boxX, boxY, boxW, boxH, 10, 10)
-
-  local borderCol = lastOutcome.critical and {1, 0.85, 0.2} or {0.4, 0.4, 0.6}
-  love.graphics.setColor(borderCol)
-  love.graphics.setLineWidth(lastOutcome.critical and 3 or 2)
-  love.graphics.rectangle("line", boxX, boxY, boxW, boxH, 10, 10)
-
-  -- カード名
-  love.graphics.setFont(menuFont)
-  if lastOutcome.rarity == "rare" then
-    love.graphics.setColor(1, 0.9, 0.4)
-  elseif lastOutcome.rarity == "rest" then
-    love.graphics.setColor(0.4, 0.9, 0.4)
-  else
-    love.graphics.setColor(0.8, 0.8, 1)
-  end
-  boldPrintf(lastOutcome.cardName, boxX, boxY + 15, boxW, "center")
-
-  -- 成功メッセージ
-  love.graphics.setFont(menuFont)
-  if lastOutcome.critical then
-    love.graphics.setColor(1, 0.85, 0.2)
-  else
-    love.graphics.setColor(0.3, 1, 0.4)
-  end
-  boldPrintf(lastOutcome.message, boxX, boxY + 48, boxW, "center")
-
-  -- 結果
-  love.graphics.setFont(smallFont)
-  local dy = boxY + 85
-  for _, r in ipairs(lastOutcome.results) do
-    local sign = r.val >= 0 and "+" or ""
-    local suffix = r.suffix or ""
-    love.graphics.setColor(r.val >= 0 and {0.3, 1, 0.5} or {1, 0.5, 0.4})
-    boldPrintf(
-      string.format("%s %s%d%s", r.label, sign, r.val, suffix),
-      boxX, dy, boxW, "center"
-    )
-    dy = dy + 26
-  end
-
-  -- ビフォーアフター表示
-  dy = dy + 10
-  drawBeforeAfter(boxX, dy, boxW)
-
-  love.graphics.setFont(smallFont)
-  love.graphics.setColor(0.5, 0.5, 0.6)
-  boldPrintf("[Enterで続ける]", boxX, boxY + boxH - 35, boxW, "center")
-end
-
--- ===== 描画: 強制イベント画面 =====
-function drawForcedEventScreen()
-  local w, h = BASE_W, BASE_H
-  love.graphics.clear(0.08, 0.08, 0.14)
-
-  local boxX, boxY, boxW, boxH = 60, 20, w - 120, h - 40
-  love.graphics.setColor(0.12, 0.12, 0.22)
-  love.graphics.rectangle("fill", boxX, boxY, boxW, boxH, 10, 10)
-
-  local isNeg = lastOutcome.rarity == "disaster"
-  local borderCol = isNeg and {1, 0.3, 0.3} or {0.3, 0.8, 1}
-  love.graphics.setColor(borderCol)
-  love.graphics.setLineWidth(3)
-  love.graphics.rectangle("line", boxX, boxY, boxW, boxH, 10, 10)
-
-  -- ヘッダー
-  love.graphics.setFont(smallFont)
-  love.graphics.setColor(borderCol)
-  boldPrintf(
-    isNeg and "【トラブル発生！】" or "【朗報！】",
-    boxX, boxY + 15, boxW, "center"
-  )
-
-  -- イベント名
-  love.graphics.setFont(menuFont)
-  love.graphics.setColor(isNeg and {1, 0.4, 0.4} or {0.4, 0.9, 1})
-  boldPrintf(lastOutcome.cardName, boxX, boxY + 45, boxW, "center")
-
-  -- 結果
-  love.graphics.setFont(smallFont)
-  local dy = boxY + 85
-  for _, r in ipairs(lastOutcome.results) do
-    local sign = r.val >= 0 and "+" or ""
-    local suffix = r.suffix or ""
-    love.graphics.setColor(r.val >= 0 and {0.3, 1, 0.5} or {1, 0.5, 0.4})
-    boldPrintf(
-      string.format("%s %s%d%s", r.label, sign, r.val, suffix),
-      boxX, dy, boxW, "center"
-    )
-    dy = dy + 26
-  end
-
-  -- ビフォーアフター表示
-  dy = dy + 10
-  drawBeforeAfter(boxX, dy, boxW)
-
-  love.graphics.setFont(smallFont)
-  love.graphics.setColor(0.5, 0.5, 0.6)
-  boldPrintf("[Enterでカード選択へ]", boxX, boxY + boxH - 35, boxW, "center")
-end
-
--- ===== 描画: リリース画面 =====
-function drawReleaseScreen()
-  local w, h = BASE_W, BASE_H
-  love.graphics.clear(0.06, 0.06, 0.15)
-
-  love.graphics.setFont(titleFont)
-  love.graphics.setColor(1, 0.85, 0.3)
-  boldPrintf("リリース！", 0, 30, w, "center")
-
-  love.graphics.setFont(menuFont)
-  love.graphics.setColor(0.8, 0.8, 0.9)
-  boldPrintf("あなたのソシャゲがついにリリースされた！", 0, 80, w, "center")
-
-  if releaseResult then
-    local r = releaseResult
-    love.graphics.setFont(smallFont)
-    local sy = 140
-    local cx = w / 2 - 150
-
-    love.graphics.setColor(0.6, 0.6, 0.7)
-    boldPrint(string.format("コンテンツ力: %d", r.content), cx, sy)
-    boldPrint(string.format("技術力: %d", r.tech), cx, sy + 25)
-    boldPrint(string.format("話題性: %d", r.hype), cx, sy + 50)
-    boldPrint(string.format("事前登録: %d人", r.preregUsers), cx, sy + 75)
-
-    -- 計算式
-    sy = sy + 115
-    love.graphics.setColor(0.5, 0.5, 0.6)
-    boldPrintf(
-      string.format("基本ユーザー = %d×100 + %d×50 + %d = %d人",
-        r.content, r.hype, r.preregUsers, r.baseUsers),
-      0, sy, w, "center"
-    )
-
-    sy = sy + 28
-    local bonusStr
-    if r.bonus >= 1.3 then bonusStr = "好評スタート！ (×1.3)"
-    elseif r.bonus >= 1.0 then bonusStr = "普通のスタート (×1.0)"
-    elseif r.bonus >= 0.7 then bonusStr = "やや低評価... (×0.7)"
-    else bonusStr = "大炎上スタート... (×0.5)"
+    for i, item in ipairs(menuItems) do
+        if selectedIndex == i then
+            love.graphics.setColor(1, 1, 0)
+            boldPrint("→ " .. item, 320, y)
+        else
+            love.graphics.setColor(1, 1, 1)
+            boldPrint("  " .. item, 320, y)
+        end
+        y = y + 40
     end
-    love.graphics.setColor(r.bonus >= 1.0 and {0.4, 1, 0.5} or {1, 0.5, 0.4})
-    boldPrintf(bonusStr, 0, sy, w, "center")
 
-    -- 最終ユーザー数
-    sy = sy + 50
-    love.graphics.setFont(titleFont)
-    love.graphics.setColor(0.4, 0.9, 1)
-    boldPrintf(string.format("初期ユーザー: %d人", r.finalUsers), 0, sy, w, "center")
-
-    -- 残り情報
-    sy = sy + 60
     love.graphics.setFont(smallFont)
-    love.graphics.setColor(1, 0.9, 0.3)
-    boldPrintf(string.format("残り資金: %d万  借金残高: %d万", r.money, r.debt), 0, sy, w, "center")
-  end
-
-  love.graphics.setFont(smallFont)
-  love.graphics.setColor(0.5, 0.5, 0.6)
-  boldPrintf("[Enterで運営期を開始]", 0, h - 50, w, "center")
+    love.graphics.setColor(0.7, 0.7, 0.7)
+    boldPrintf("↑↓: 選択 / SPACE: 決定 / ESC: 終了", 0, 520, WINDOW_WIDTH, "center")
 end
 
--- ===== 描画: 勝利画面 =====
-function drawWinScreen()
-  local w, h = BASE_W, BASE_H
-  love.graphics.clear(0.05, 0.08, 0.05)
+function drawSettingsScreen()
+    love.graphics.setFont(largeFont)
+    love.graphics.setColor(1, 1, 0.5)
+    boldPrint("ゲーム設定", 50, 20)
 
-  love.graphics.setFont(titleFont)
-  love.graphics.setColor(1, 0.85, 0.2)
-  boldPrintf("借金完済！", 0, 60, w, "center")
+    love.graphics.setFont(font)
 
-  love.graphics.setFont(menuFont)
-  love.graphics.setColor(0.9, 0.9, 0.8)
-  boldPrintf("おめでとう！全ての借金を返済した！", 0, 120, w, "center")
-
-  love.graphics.setFont(smallFont)
-  love.graphics.setColor(0.7, 0.7, 0.8)
-  local sy = 190
-  boldPrintf(
-    string.format("運営期間: %s (%dターン)", turnToDateStr(state.turn), state.turn),
-    0, sy, w, "center"
-  )
-  boldPrintf(
-    string.format("運営期: %dヶ月", state.opsTurn),
-    0, sy + 30, w, "center"
-  )
-  boldPrintf(
-    string.format("最終ユーザー: %d人", state.users),
-    0, sy + 60, w, "center"
-  )
-  boldPrintf(
-    string.format("最終資金: %d万円", state.money),
-    0, sy + 90, w, "center"
-  )
-  boldPrintf(
-    string.format("コンテンツ力: %d  技術力: %d  話題性: %d  課金圧: %d",
-      state.content, state.tech, state.hype, state.monetize),
-    0, sy + 120, w, "center"
-  )
-
-  -- 評価コメント
-  love.graphics.setFont(menuFont)
-  love.graphics.setColor(1, 0.85, 0.3)
-  local comment
-  if state.opsTurn <= 24 then
-    comment = "素晴らしい経営手腕！\n短期間での完済は見事！"
-  elseif state.opsTurn <= 48 then
-    comment = "堅実な運営で借金を返した！\nこれからは自由だ！"
-  else
-    comment = "長い道のりだったが、ついに完済！\nあなたの粘り勝ちだ！"
-  end
-  boldPrintf(comment, 100, sy + 170, w - 200, "center")
-
-  love.graphics.setFont(smallFont)
-  love.graphics.setColor(0.4, 0.4, 0.4)
-  boldPrintf("[Enterでタイトルに戻る]", 0, h - 40, w, "center")
-end
-
--- ===== 描画: ゲームオーバー =====
-function drawGameOverScreen()
-  local w, h = BASE_W, BASE_H
-  love.graphics.clear(0.05, 0.02, 0.02)
-
-  love.graphics.setFont(titleFont)
-  love.graphics.setColor(1, 0.2, 0.2)
-  boldPrintf("サービス終了", 0, 40, w, "center")
-
-  love.graphics.setFont(menuFont)
-  love.graphics.setColor(0.8, 0.5, 0.5)
-  boldPrintf(getGameOverReason(), 0, 100, w, "center")
-
-  love.graphics.setFont(smallFont)
-  love.graphics.setColor(1, 1, 1)
-  local phaseStr = state.phase == "dev" and "開発期" or "運営期"
-  boldPrintf(
-    string.format("%s %s (%dターン目)", phaseStr, turnToDateStr(state.turn), state.turn),
-    0, 160, w, "center"
-  )
-
-  love.graphics.setColor(0.6, 0.6, 0.7)
-  local sy = 220
-  if state.phase == "ops" then
-    boldPrintf(
-      string.format("運営期間: %dヶ月", state.opsTurn), 0, sy, w, "center")
-    sy = sy + 30
-  end
-  boldPrintf(
-    string.format("最終ユーザー: %d人  最終資金: %d万円",
-      math.max(0, state.users), state.money),
-    0, sy, w, "center"
-  )
-  sy = sy + 25
-  boldPrintf(
-    string.format("借金残高: %d万円", state.debt),
-    0, sy, w, "center"
-  )
-  sy = sy + 25
-  boldPrintf(
-    string.format("コンテンツ力: %d  技術力: %d  話題性: %d  課金圧: %d",
-      state.content, state.tech, state.hype, state.monetize),
-    0, sy, w, "center"
-  )
-
-  love.graphics.setFont(smallFont)
-  love.graphics.setColor(0.4, 0.4, 0.4)
-  boldPrintf("[Enterでタイトルに戻る]", 0, h - 40, w, "center")
-end
-
--- ===== UI部品 =====
-function drawBarSimple(x, y, barW, barH, value, maxVal, label, color)
-  local ratio = math.max(0, math.min(1, value / maxVal))
-  love.graphics.setFont(tinyFont)
-  love.graphics.setColor(1, 1, 1)
-  boldPrint(label, x, y + 1)
-  local labelW = tinyFont:getWidth(label) + 5
-  love.graphics.setColor(0.15, 0.15, 0.25)
-  love.graphics.rectangle("fill", x + labelW, y, barW, barH)
-  love.graphics.setColor(color)
-  love.graphics.rectangle("fill", x + labelW, y, barW * ratio, barH)
-  love.graphics.setColor(0.35, 0.35, 0.45)
-  love.graphics.rectangle("line", x + labelW, y, barW, barH)
-  love.graphics.setColor(1, 1, 1)
-  boldPrint(string.format("%d", value), x + labelW + barW + 5, y + 1)
-end
-
-function drawStatMini(x, y, label, value, maxVal)
-  local barW = 50
-  local barH = 12
-  local ratio = math.max(0, math.min(1, value / maxVal))
-
-  love.graphics.setColor(0.8, 0.8, 0.9)
-  boldPrint(label, x, y)
-
-  local lw = tinyFont:getWidth(label) + 4
-  love.graphics.setColor(0.15, 0.15, 0.25)
-  love.graphics.rectangle("fill", x + lw, y + 1, barW, barH)
-
-  local r = 1 - ratio * 0.7
-  local g = 0.3 + ratio * 0.7
-  love.graphics.setColor(r, g, 0.4)
-  love.graphics.rectangle("fill", x + lw, y + 1, barW * ratio, barH)
-
-  love.graphics.setColor(0.35, 0.35, 0.45)
-  love.graphics.rectangle("line", x + lw, y + 1, barW, barH)
-
-  love.graphics.setColor(1, 1, 1)
-  boldPrint(tostring(value), x + lw + barW + 4, y)
-end
-
--- ===== ビフォーアフター差分表示 =====
-function drawBeforeAfter(boxX, startY, boxW)
-  local snap = stateSnapshot
-  if not snap or not snap.money then return startY end
-
-  local items = {}
-  -- フェーズに応じて表示項目を変える
-  if state.phase == "ops" or (snap.users and snap.users > 0) then
-    table.insert(items, { label = "ユーザー", before = snap.users, after = state.users, suffix = "人" })
-  end
-  if state.phase == "dev" and snap.preregUsers then
-    table.insert(items, { label = "事前登録", before = snap.preregUsers, after = state.preregUsers, suffix = "人" })
-  end
-  table.insert(items, { label = "資金", before = snap.money, after = state.money, suffix = "万" })
-  if snap.debt ~= state.debt then
-    table.insert(items, { label = "借金", before = snap.debt, after = state.debt, suffix = "万" })
-  end
-  table.insert(items, { label = "コンテンツ力", before = snap.content, after = state.content, suffix = "" })
-  table.insert(items, { label = "技術力", before = snap.tech, after = state.tech, suffix = "" })
-  table.insert(items, { label = "話題性", before = snap.hype, after = state.hype, suffix = "" })
-  table.insert(items, { label = "課金圧", before = snap.monetize, after = state.monetize, suffix = "" })
-  table.insert(items, { label = "体力", before = snap.energy, after = state.energy, suffix = "" })
-
-  -- 変化があった項目のみ表示
-  local changed = {}
-  for _, item in ipairs(items) do
-    if item.before ~= item.after then
-      table.insert(changed, item)
+    -- カテゴリ表示
+    local x = 50
+    local y = 80
+    for i, category in ipairs(settingsCategories) do
+        if i == settingsSelectedCategory then
+            love.graphics.setColor(1, 1, 0)
+            boldPrint("【" .. category .. "】", x, y)
+        else
+            love.graphics.setColor(0.5, 0.5, 0.5)
+            boldPrint(category, x, y)
+        end
+        x = x + 140
     end
-  end
 
-  if #changed == 0 then return startY end
+    -- 設定項目表示
+    y = 130
+    local category = settingsCategories[settingsSelectedCategory]
+    local items = settingsItems[category]
 
-  love.graphics.setFont(tinyFont)
+    for i, item in ipairs(items) do
+        local value
+        if item.index then
+            value = config[item.key][item.index]
+        else
+            value = config[item.key]
+        end
 
-  -- ヘッダー
-  love.graphics.setColor(0.5, 0.5, 0.6)
-  boldPrintf("── ステータス変化 ──", boxX, startY, boxW, "center")
-  local dy = startY + 18
+        if settingsSelectedItem == i then
+            love.graphics.setColor(1, 1, 0)
+            boldPrint("→", 50, y)
+        end
 
-  for _, item in ipairs(changed) do
-    local diff = item.after - item.before
-    local diffSign = diff >= 0 and "+" or ""
+        love.graphics.setColor(1, 1, 1)
+        boldPrint(item.name .. ":", 80, y)
 
-    -- ラベル
-    love.graphics.setColor(0.7, 0.7, 0.8)
-    local labelText = string.format("%-6s", item.label)
-    boldPrint(labelText, boxX + 30, dy)
+        love.graphics.setColor(0.5, 1, 0.5)
+        if item.decimal then
+            boldPrint(string.format("%.2f", value), 400, y)
+        else
+            boldPrint(string.format("%d", value), 400, y)
+        end
 
-    -- before値
-    love.graphics.setColor(0.6, 0.6, 0.6)
-    local beforeText = string.format("%d%s", item.before, item.suffix)
-    boldPrint(beforeText, boxX + 130, dy)
+        love.graphics.setColor(0.5, 0.5, 0.5)
+        love.graphics.setFont(smallFont)
+        boldPrint(string.format("[%s - %s]",
+            item.decimal and string.format("%.2f", item.min) or tostring(item.min),
+            item.decimal and string.format("%.2f", item.max) or tostring(item.max)
+        ), 500, y + 2)
+        love.graphics.setFont(font)
 
-    -- 矢印
-    if diff > 0 then
-      love.graphics.setColor(0.3, 1, 0.5)
-    elseif diff < 0 then
-      love.graphics.setColor(1, 0.4, 0.4)
+        y = y + 30
+    end
+
+    y = y + 20
+
+    -- カテゴリ切替
+    if settingsSelectedItem == #items + 1 then
+        love.graphics.setColor(1, 1, 0)
+        boldPrint("→", 50, y)
+    end
+    love.graphics.setColor(0.7, 0.7, 1)
+    boldPrint("← カテゴリ切替 →", 80, y)
+    y = y + 35
+
+    -- 保存して戻る
+    if settingsSelectedItem == #items + 2 then
+        love.graphics.setColor(1, 1, 0)
+        boldPrint("→", 50, y)
+    end
+    love.graphics.setColor(0.5, 1, 0.5)
+    boldPrint("保存して戻る", 80, y)
+
+    love.graphics.setFont(smallFont)
+    love.graphics.setColor(0.7, 0.7, 0.7)
+    boldPrintf("↑↓: 選択 / ←→: 調整/カテゴリ切替 / R: デフォルトに戻す / ESC: 戻る", 0, 550, WINDOW_WIDTH, "center")
+end
+
+function drawAutoplayScreen()
+    love.graphics.setFont(largeFont)
+    love.graphics.setColor(1, 1, 0.5)
+    boldPrint("オートプレイ", 50, 30)
+
+    love.graphics.setFont(font)
+
+    if autoplayState.running then
+        -- 実行中
+        local y = 150
+        love.graphics.setColor(1, 1, 1)
+        boldPrint("実行中...", 300, y)
+        y = y + 60
+
+        love.graphics.setColor(0.5, 1, 0.5)
+        boldPrint(string.format("進行: %d / %d (%.1f%%)",
+            autoplayState.currentRun,
+            autoplayState.totalRuns,
+            (autoplayState.currentRun / autoplayState.totalRuns) * 100
+        ), 200, y)
+
+        -- プログレスバー
+        y = y + 50
+        local barWidth = 400
+        local barHeight = 30
+        local barX = (WINDOW_WIDTH - barWidth) / 2
+        love.graphics.setColor(0.3, 0.3, 0.3)
+        love.graphics.rectangle("fill", barX, y, barWidth, barHeight)
+        love.graphics.setColor(0.5, 1, 0.5)
+        local progress = (autoplayState.currentRun / autoplayState.totalRuns) * barWidth
+        love.graphics.rectangle("fill", barX, y, progress, barHeight)
+
     else
-      love.graphics.setColor(0.6, 0.6, 0.6)
+        -- メニュー
+        local y = 120
+        love.graphics.setColor(1, 1, 1)
+        boldPrint("実行回数を選択:", 250, y)
+        y = y + 60
+
+        local modes = {
+            "10回（テスト用）",
+            "10,000回（バランス確認）",
+            "1,000,000回（詳細分析）",
+            "戻る"
+        }
+
+        for i, mode in ipairs(modes) do
+            if selectedIndex == i then
+                love.graphics.setColor(1, 1, 0)
+                boldPrint("→ " .. mode, 200, y)
+            else
+                love.graphics.setColor(1, 1, 1)
+                boldPrint("  " .. mode, 200, y)
+            end
+            y = y + 40
+        end
+
+        y = y + 40
+        love.graphics.setColor(0.7, 0.7, 0.7)
+        love.graphics.setFont(smallFont)
+        boldPrint("※結果はCSVファイルとして保存されます", 200, y)
+        boldPrint(string.format("  保存先: %s", love.filesystem.getSaveDirectory()), 200, y + 20)
     end
-    boldPrint("→", boxX + 220, dy)
 
-    -- after値
-    local afterText = string.format("%d%s", item.after, item.suffix)
-    boldPrint(afterText, boxX + 240, dy)
+    love.graphics.setFont(smallFont)
+    love.graphics.setColor(0.7, 0.7, 0.7)
+    if not autoplayState.running then
+        boldPrintf("↑↓: 選択 / SPACE: 決定 / ESC: 戻る", 0, 550, WINDOW_WIDTH, "center")
+    else
+        boldPrintf("実行中... しばらくお待ちください", 0, 550, WINDOW_WIDTH, "center")
+    end
+end
 
-    -- 差分
-    local diffText = string.format("(%s%d)", diffSign, diff)
-    boldPrint(diffText, boxX + 330, dy)
+function drawAutoplayResultScreen()
+    love.graphics.setFont(largeFont)
+    love.graphics.setColor(1, 1, 0.5)
+    boldPrint("オートプレイ結果", 50, 15)
 
-    dy = dy + 17
-  end
+    local s = autoplayState.stats
+    love.graphics.setFont(smallFont)
 
-  return dy
+    -- 左側: 統計情報
+    local leftX = 20
+    local y = 60
+
+    -- 実行回数と生存率
+    love.graphics.setColor(1, 1, 1)
+    boldPrint(string.format("実行: %d回", s.totalRuns or autoplayState.totalRuns), leftX, y)
+    y = y + 18
+    local survivalColor = s.survivalRate >= 50 and {0.5, 1, 0.5} or s.survivalRate >= 30 and {1, 1, 0.5} or {1, 0.5, 0.5}
+    love.graphics.setColor(survivalColor)
+    boldPrint(string.format("生存率: %.1f%% (%d/%d)", s.survivalRate, s.survived, s.totalRuns or autoplayState.totalRuns), leftX, y)
+    y = y + 22
+
+    -- 生存月数
+    love.graphics.setColor(0.7, 1, 1)
+    boldPrint(string.format("月数 平均:%.1f 最長:%d 最短:%d", s.avgMonths, s.maxMonths, s.minMonths), leftX, y)
+    y = y + 20
+
+    -- 最終資金
+    love.graphics.setColor(1, 1, 0.5)
+    boldPrint(string.format("資金 平均:%s", formatMoney(s.avgMoney)), leftX, y)
+    y = y + 16
+    boldPrint(string.format("    最大:%s 最小:%s", formatMoney(s.maxMoney), formatMoney(s.minMoney)), leftX, y)
+    y = y + 20
+
+    -- 最終ユーザ数
+    love.graphics.setColor(0.7, 1, 0.7)
+    boldPrint(string.format("ユーザ 平均:%s", formatNumber(s.avgUsers)), leftX, y)
+    y = y + 16
+    boldPrint(string.format("      最大:%s 最小:%s", formatNumber(s.maxUsers), formatNumber(s.minUsers)), leftX, y)
+    y = y + 20
+
+    -- 最終セルラン
+    love.graphics.setColor(1, 0.7, 1)
+    boldPrint(string.format("セルラン 平均:%.0f位", s.avgRanking), leftX, y)
+    y = y + 16
+    boldPrint(string.format("        最高:%d位 最低:%d位", s.minRanking, s.maxRanking), leftX, y)
+    y = y + 20
+
+    -- 炎上
+    love.graphics.setColor(1, 0.7, 0.7)
+    boldPrint(string.format("平均炎上: %.2f回", s.avgFires), leftX, y)
+    y = y + 25
+
+    -- 保存ファイル
+    love.graphics.setColor(0.5, 1, 0.5)
+    boldPrint("保存:", leftX, y)
+    y = y + 16
+    love.graphics.setColor(0.6, 0.6, 0.6)
+    boldPrint((s.csvFilename or ""):sub(1, 25), leftX, y)
+    y = y + 14
+    boldPrint((s.statsFilename or ""):sub(1, 25), leftX, y)
+
+    -- 右側: グラフ
+    local graphX = 410
+    local graphWidth = 370
+    local graphHeight = 140
+
+    -- グラフ1: 終了月数分布
+    drawHistogram(graphX, 60, graphWidth, graphHeight, "終了月数分布", s.monthsDist, config.maxMonths)
+
+    -- グラフ2: 最終資金分布
+    drawHistogram(graphX, 220, graphWidth, graphHeight, "最終資金分布", s.moneyDist, 10,
+        {"<0", "0-500", "500-1k", "1k-2k", "2k-3k", "3k-5k", "5k-10k", "10k-20k", "20k-50k", "50k+"})
+
+    -- グラフ3: 最終ユーザ数分布
+    drawHistogram(graphX, 380, graphWidth, graphHeight, "最終ユーザ数分布", s.usersDist, 10,
+        {"<1k", "1k-5k", "5k-10k", "10k-20k", "20k-50k", "50k-100k", "100k-200k", "200k-500k", "500k-1M", "1M+"})
+
+    -- 操作説明
+    love.graphics.setColor(0.7, 0.7, 0.7)
+    boldPrintf("SPACE: タイトルへ / ESC: 戻る", 0, 570, WINDOW_WIDTH, "center")
+end
+
+-- ヒストグラム描画
+function drawHistogram(x, y, width, height, title, data, maxBuckets, labels)
+    love.graphics.setFont(smallFont)
+
+    -- タイトル
+    love.graphics.setColor(1, 1, 0.5)
+    boldPrint(title, x, y)
+
+    -- グラフエリア
+    local graphY = y + 20
+    local graphH = height - 25
+    local barWidth = width / maxBuckets
+
+    -- 最大値を見つける
+    local maxValue = 0
+    for i = 1, maxBuckets do
+        local value = data[i] or data[i-1] or 0
+        maxValue = math.max(maxValue, value)
+    end
+
+    if maxValue == 0 then
+        love.graphics.setColor(0.5, 0.5, 0.5)
+        boldPrint("データなし", x + width/2 - 40, graphY + graphH/2)
+        return
+    end
+
+    -- 棒グラフ描画
+    for i = 1, maxBuckets do
+        local value = data[i] or data[i-1] or 0
+        local barHeight = (value / maxValue) * graphH
+        local barX = x + (i - 1) * barWidth
+
+        -- 棒
+        love.graphics.setColor(0.3, 0.7, 1)
+        love.graphics.rectangle("fill", barX + 1, graphY + graphH - barHeight, barWidth - 2, barHeight)
+
+        -- 枠
+        love.graphics.setColor(0.2, 0.2, 0.3)
+        love.graphics.rectangle("line", barX + 1, graphY, barWidth - 2, graphH)
+
+        -- ラベル（一部のみ表示）
+        if labels and i % math.ceil(maxBuckets / 5) == 1 then
+            love.graphics.setColor(0.7, 0.7, 0.7)
+            love.graphics.printf(labels[i] or "", barX, graphY + graphH + 2, barWidth, "center")
+        elseif not labels and maxBuckets <= 40 and i % math.ceil(maxBuckets / 8) == 0 then
+            love.graphics.setColor(0.7, 0.7, 0.7)
+            love.graphics.printf(tostring(i-1), barX, graphY + graphH + 2, barWidth, "center")
+        end
+    end
+end
+
+function drawGameScreen()
+    if subState == "month_start" then
+        drawMonthStartScreen()
+    elseif subState == "action_select" then
+        drawActionSelectScreen()
+    elseif subState == "action_result" then
+        drawActionResultScreen()
+    elseif subState == "fire_check" then
+        drawFireCheckScreen()
+    elseif subState == "month_end" then
+        drawMonthEndScreen()
+    end
+end
+
+function drawMonthStartScreen()
+    drawHeader()
+
+    love.graphics.setFont(largeFont)
+    love.graphics.setColor(1, 1, 0.5)
+    boldPrintf(string.format("%d ヶ月目", state.month), 0, 200, WINDOW_WIDTH, "center")
+
+    love.graphics.setFont(font)
+    love.graphics.setColor(1, 1, 1)
+    boldPrintf("今月も頑張りましょう", 0, 280, WINDOW_WIDTH, "center")
+
+    love.graphics.setColor(0.7, 0.7, 0.7)
+    boldPrintf("SPACE: 続ける", 0, 500, WINDOW_WIDTH, "center")
+end
+
+function drawActionSelectScreen()
+    drawHeader()
+
+    local x = 50
+    local y = 120
+
+    love.graphics.setColor(1, 1, 0.5)
+    boldPrint("▼ 行動を選択", x, y)
+    y = y + 40
+
+    for i, action in ipairs(actions) do
+        local cost = getActionCost(state.actionsThisMonth)
+        local canAfford = state.money >= cost
+
+        if selectedIndex == i then
+            love.graphics.setColor(1, 1, 0)
+            boldPrint("→", x, y)
+        end
+
+        if canAfford then
+            love.graphics.setColor(1, 1, 1)
+        else
+            love.graphics.setColor(0.5, 0.5, 0.5)
+        end
+
+        boldPrint(string.format("%s (コスト: %s)", action.name, formatMoney(cost)), x + 30, y)
+        love.graphics.setColor(0.7, 0.7, 0.7)
+        boldPrint(action.desc, x + 50, y + 22)
+
+        y = y + 60
+    end
+
+    if selectedIndex == 4 then
+        love.graphics.setColor(1, 1, 0)
+        boldPrint("→", x, y)
+    end
+    love.graphics.setColor(0.5, 1, 0.5)
+    boldPrint("月末へ進む", x + 30, y)
+
+    y = y + 60
+    love.graphics.setColor(1, 0.7, 0.7)
+    local fireRate = config.fireBaseRate + (state.actionsThisMonth * config.fireRatePerAction)
+    boldPrint(string.format("今月の行動数: %d回 / 炎上率: %d%%", state.actionsThisMonth, fireRate), x, y)
+
+    love.graphics.setColor(0.7, 0.7, 0.7)
+    boldPrintf("↑↓: 選択 / SPACE: 決定", 0, 550, WINDOW_WIDTH, "center")
+end
+
+function drawActionResultScreen()
+    drawHeader()
+
+    local x = 100
+    local y = 150
+
+    love.graphics.setColor(1, 1, 0.5)
+    boldPrint("▼ " .. state.lastActionResult.name, x, y)
+    y = y + 40
+
+    love.graphics.setColor(1, 0.5, 0.5)
+    boldPrint("コスト: " .. formatMoney(state.lastActionResult.cost), x, y)
+    y = y + 30
+
+    love.graphics.setColor(0.5, 1, 0.5)
+    for _, result in ipairs(state.lastActionResult.results) do
+        boldPrint("・" .. result, x, y)
+        y = y + 25
+    end
+
+    y = y + 20
+    love.graphics.setColor(1, 1, 1)
+    boldPrint("残り資金: " .. formatMoney(state.lastActionResult.newMoney), x, y)
+
+    love.graphics.setColor(0.7, 0.7, 0.7)
+    boldPrintf("SPACE: 続ける", 0, 500, WINDOW_WIDTH, "center")
+end
+
+function drawFireCheckScreen()
+    drawHeader()
+
+    local x = 100
+    local y = 150
+
+    love.graphics.setColor(1, 1, 0.5)
+    boldPrint("▼ 炎上判定", x, y)
+    y = y + 40
+
+    love.graphics.setColor(1, 1, 1)
+    boldPrint(string.format("炎上率: %d%%", state.fireResult.rate), x, y)
+    y = y + 40
+
+    if state.fireResult.happened then
+        love.graphics.setColor(1, 0.3, 0.3)
+        boldPrint("炎上発生！！", x, y)
+        y = y + 40
+
+        love.graphics.setColor(1, 0.5, 0.5)
+        boldPrint("資金 -" .. formatMoney(state.fireResult.moneyLoss), x, y)
+        y = y + 25
+        boldPrint("評価 -" .. state.fireResult.ratingLoss, x, y)
+        y = y + 25
+        boldPrint("ユーザ -" .. formatNumber(state.fireResult.userLoss), x, y)
+    else
+        love.graphics.setColor(0.5, 1, 0.5)
+        boldPrint("炎上回避", x, y)
+    end
+
+    love.graphics.setColor(0.7, 0.7, 0.7)
+    boldPrintf("SPACE: 月末処理へ", 0, 500, WINDOW_WIDTH, "center")
+end
+
+function drawMonthEndScreen()
+    drawHeader()
+
+    local x = 80
+    local y = 120
+
+    love.graphics.setColor(1, 1, 0.5)
+    boldPrint("▼ 月末処理", x, y)
+    y = y + 40
+
+    local result = state.monthEndResult
+
+    if result.items.gacha > 0 or result.items.content > 0 or result.items.ad > 0 then
+        love.graphics.setColor(0.7, 0.7, 1)
+        boldPrint("アイテム効果（今月で消滅）:", x, y)
+        y = y + 25
+        if result.items.gacha > 0 then
+            boldPrint(string.format("  ガチャ×%d (収益+%d%%)", result.items.gacha, math.floor(result.items.gacha * config.gachaItemRevenue * 100)), x, y)
+            y = y + 22
+        end
+        if result.items.content > 0 then
+            boldPrint(string.format("  コンテンツ×%d (収益+%d%%)", result.items.content, math.floor(result.items.content * config.contentItemRevenue * 100)), x, y)
+            y = y + 22
+        end
+        if result.items.ad > 0 then
+            boldPrint(string.format("  広告×%d (ユーザ+%d%%)", result.items.ad, math.floor(result.items.ad * config.adItemUsers * 100)), x, y)
+            y = y + 22
+        end
+        y = y + 10
+    end
+
+    love.graphics.setColor(0.5, 1, 0.5)
+    boldPrint("新規ユーザ: +" .. formatNumber(result.newUsers), x, y)
+    y = y + 25
+
+    love.graphics.setColor(1, 0.5, 0.5)
+    boldPrint(string.format("離脱ユーザ: -%s (離脱率%.1f%%)", formatNumber(result.leaveUsers), result.leaveRate), x, y)
+    y = y + 35
+
+    love.graphics.setColor(1, 1, 0.5)
+    boldPrint(string.format("収益: +%s (評価補正×%.1f)", formatMoney(result.revenue), result.ratingMultiplier), x, y)
+    y = y + 25
+
+    love.graphics.setColor(1, 1, 1)
+    boldPrint("最終資金: " .. formatMoney(state.money), x, y)
+
+    love.graphics.setColor(0.7, 0.7, 0.7)
+    boldPrintf("SPACE: 次月へ", 0, 550, WINDOW_WIDTH, "center")
+end
+
+function drawGameOverScreen()
+    love.graphics.setFont(largeFont)
+    love.graphics.setColor(1, 0.3, 0.3)
+    boldPrintf("GAME OVER", 0, 150, WINDOW_WIDTH, "center")
+
+    love.graphics.setFont(font)
+    love.graphics.setColor(1, 1, 1)
+    boldPrintf(string.format("生存期間: %d ヶ月", state.month - 1), 0, 250, WINDOW_WIDTH, "center")
+    boldPrintf("資金が尽きました", 0, 280, WINDOW_WIDTH, "center")
+
+    love.graphics.setColor(0.7, 0.7, 0.7)
+    boldPrintf("SPACE: タイトルへ", 0, 450, WINDOW_WIDTH, "center")
+end
+
+function drawClearScreen()
+    love.graphics.setFont(largeFont)
+    love.graphics.setColor(1, 1, 0)
+    boldPrintf("CLEAR!", 0, 150, WINDOW_WIDTH, "center")
+
+    love.graphics.setFont(font)
+    love.graphics.setColor(1, 1, 1)
+    boldPrintf(string.format("%dヶ月生存達成！", config.maxMonths), 0, 250, WINDOW_WIDTH, "center")
+    boldPrintf(string.format("最終資金: %s", formatMoney(state.money)), 0, 280, WINDOW_WIDTH, "center")
+    boldPrintf(string.format("最終ユーザ数: %s", formatNumber(state.users)), 0, 310, WINDOW_WIDTH, "center")
+    boldPrintf(string.format("最終評価: %s", getRatingStars(state.rating)), 0, 340, WINDOW_WIDTH, "center")
+
+    love.graphics.setColor(0.7, 0.7, 0.7)
+    boldPrintf("SPACE: タイトルへ", 0, 450, WINDOW_WIDTH, "center")
+end
+
+function drawHeader()
+    local y = 10
+    love.graphics.setColor(1, 1, 1)
+
+    boldPrint(string.format("%d ヶ月目 / %d", state.month, config.maxMonths), 20, y)
+
+    local moneyColor = state.money > 1000 and {0.5, 1, 0.5} or state.money > 500 and {1, 1, 1} or {1, 0.5, 0.5}
+    love.graphics.setColor(moneyColor)
+    boldPrint("資金: " .. formatMoney(state.money), 20, y + 25)
+
+    local rightX = WINDOW_WIDTH - 250
+    love.graphics.setColor(1, 1, 1)
+    boldPrint("評価: " .. getRatingStars(state.rating), rightX, y)
+    boldPrint("ユーザ: " .. formatNumber(state.users), rightX, y + 25)
+    boldPrint("セルラン: " .. state.ranking .. "位", rightX, y + 50)
+
+    y = y + 80
+    love.graphics.setColor(0.8, 0.8, 1)
+    boldPrint(string.format("キャラ:%d / 技術:%d / 知名度:%d", state.character, state.tech, state.fame), 20, y)
+
+    love.graphics.setColor(0.3, 0.3, 0.3)
+    love.graphics.rectangle("fill", 0, y + 25, WINDOW_WIDTH, 2)
 end
