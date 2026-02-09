@@ -32,6 +32,8 @@ local gameState = "title"  -- "title" | "game" | "gameover"
 local subState = "month_start"  -- "month_start" | "action_select" | "action_result" | "month_end" | "release" | "final"
 local state = {}
 local selectedIndex = 1
+local lastLeftColIndex = 1  -- 左カラムの最後の選択位置
+local lastRightColIndex = 1  -- 右カラムの最後の選択位置（アイテム内の相対位置）
 local lastActionResult = {}
 local monthEndReport = {}
 
@@ -44,6 +46,24 @@ local autoplayDecayInputBuffer = "" -- 数値入力バッファ（流行減衰�
 local autoplayTimer = 0            -- 自動進行タイマー
 local autoplayTrendDecay = -2      -- 流行減衰率（設定値）
 local autoplayInputField = "count" -- 現在編集中のフィールド ("count" or "decay")
+
+-- オートプレイ戦略システム
+local autoplayStrategy = "ランダム"  -- 選択中の戦略
+local autoplayStrategyIndex = 1     -- 戦略選択インデックス（1-5）
+local autoplayStrategies = {
+  "ランダム",
+  "リソース最大化",
+  "流行最大化",
+  "収益重視",
+  "バランス型"
+}
+local autoplayStrategyDescriptions = {
+  ["ランダム"] = "すべての選択肢から完全ランダムに選択",
+  ["リソース最大化"] = "知名度・コンテンツ・技術力の上限成長を最優先",
+  ["流行最大化"] = "流行値の増加を最優先（運営期向け）",
+  ["収益重視"] = "資金効率と収益最大化を重視",
+  ["バランス型"] = "フェーズに応じて戦略を自動切替",
+}
 
 -- フォント
 local titleFont, menuFont, smallFont, tinyFont
@@ -124,10 +144,8 @@ local allEvents = {
     costN = 0, costC = 3, costT = 3,
     apply = function(s)
       s.maxT = s.maxT + 6
-      s.money = s.money + 300
       return {
         { label = "技術力上限", val = 6 },
-        { label = "資金", val = 300, suffix = "万" },
       }
     end,
   },
@@ -192,10 +210,8 @@ local allEvents = {
     costN = 8, costC = 0, costT = 0,
     apply = function(s)
       s.trend = s.trend + 30
-      s.money = s.money + 400
       return {
         { label = "流行", val = 30 },
-        { label = "資金", val = 400, suffix = "万" },
       }
     end,
   },
@@ -225,11 +241,9 @@ local allEvents = {
     apply = function(s)
       s.trend = s.trend + 40
       s.maxN = s.maxN + 8
-      s.money = s.money + 600
       return {
         { label = "流行", val = 40 },
         { label = "知名度上限", val = 8 },
-        { label = "資金", val = 600, suffix = "万" },
       }
     end,
   },
@@ -243,11 +257,9 @@ local allEvents = {
     apply = function(s)
       s.trend = s.trend + 24
       s.maxC = s.maxC + 6
-      s.money = s.money + 500
       return {
         { label = "流行", val = 24 },
         { label = "コンテンツ上限", val = 6 },
-        { label = "資金", val = 500, suffix = "万" },
       }
     end,
   },
@@ -296,10 +308,8 @@ local allEvents = {
     costN = 0, costC = 0, costT = 8,
     apply = function(s)
       s.maxT = s.maxT + 10
-      s.money = s.money + 200
       return {
         { label = "技術力上限", val = 10 },
-        { label = "資金", val = 200, suffix = "万（補償）" },
         { text = "復旧完了" },
       }
     end,
@@ -372,13 +382,23 @@ local devActions = {
     end,
   },
   {
-    name = "アイテム調達",
-    desc = "有用なリソースを探す",
-    costN = 3, costC = 3, costT = 3,
+    name = "コンテンツ実装",
+    desc = "恒常または限定コンテンツを実装",
+    costN = 0, costC = 8, costT = 2,
     apply = function(s)
-      local item = generateItem()
+      local item = generateContentItem()
       table.insert(s.items, item)
-      return {{ label = "アイテム獲得", text = item.name }}
+      return {{ label = "コンテンツ獲得", text = item.name }}
+    end,
+  },
+  {
+    name = "ガチャ実装",
+    desc = "恒常または限定ガチャを実装",
+    costN = 2, costC = 5, costT = 5,
+    apply = function(s)
+      local item = generateGachaItem()
+      table.insert(s.items, item)
+      return {{ label = "ガチャ獲得", text = item.name }}
     end,
   },
   {
@@ -754,6 +774,15 @@ end
 function useItem(item)
   local result = {}
 
+  -- 開発期の使用制限チェック
+  if state.phase == "dev" then
+    -- 限定アイテムは開発期使用不可
+    if item.type == "limited_content" or item.type == "limited_gacha" then
+      table.insert(result, { text = "開発期は使用できません" })
+      return result
+    end
+  end
+
   -- 開発期専用施策
   if item.type == "beta_test" then
     state.maxT = state.maxT + item.value
@@ -790,12 +819,6 @@ function useItem(item)
     table.insert(result, { label = "知名度上限", val = item.value })
 
   -- 運営期専用施策
-  elseif item.type == "limited_gacha" then
-    state.trend = state.trend + item.value
-    state.money = state.money + item.value2
-    table.insert(result, { label = "流行", val = item.value })
-    table.insert(result, { label = "資金", val = item.value2, suffix = "万" })
-
   elseif item.type == "collab_event" then
     state.trend = state.trend + item.value
     state.maxN = state.maxN + item.value2
@@ -904,10 +927,19 @@ function useItem(item)
   -- 新規収益システム
   elseif item.type == "permanent_content" then
     -- 恒常コンテンツ：毎月安定収益
-    state.recurringRevenue = state.recurringRevenue + item.revenue
-    state.trend = state.trend + item.trend
-    table.insert(result, { label = "恒常収益", val = item.revenue, suffix = "万/月" })
-    table.insert(result, { label = "流行", val = item.trend })
+    if state.phase == "ops" then
+      -- 運営期のみ収益発生
+      state.recurringRevenue = state.recurringRevenue + item.revenue
+      table.insert(result, { label = "恒常収益", val = item.revenue, suffix = "万/月" })
+    else
+      -- 開発期は収益なし
+      table.insert(result, { text = "実装完了（運営期開始で収益発生）" })
+    end
+    -- 流行は開発期も適用（リリース時の補正に影響）
+    if state.phase == "ops" then
+      state.trend = state.trend + item.trend
+      table.insert(result, { label = "流行", val = item.trend })
+    end
 
   elseif item.type == "limited_content" then
     -- 限定コンテンツ：当月のみ大きな収益
@@ -918,12 +950,21 @@ function useItem(item)
 
   elseif item.type == "permanent_gacha" then
     -- 恒常ガチャ：毎月変動収益（±30%）
-    local variance = 0.3
-    local actualRevenue = math.floor(item.baseRevenue * (1 + (math.random() * 2 - 1) * variance))
-    state.recurringRevenue = state.recurringRevenue + actualRevenue
-    state.trend = state.trend + item.trend
-    table.insert(result, { label = "恒常収益", val = actualRevenue, suffix = "万/月±30%" })
-    table.insert(result, { label = "流行", val = item.trend })
+    if state.phase == "ops" then
+      -- 運営期のみ収益発生
+      local variance = 0.3
+      local actualRevenue = math.floor(item.baseRevenue * (1 + (math.random() * 2 - 1) * variance))
+      state.recurringRevenue = state.recurringRevenue + actualRevenue
+      table.insert(result, { label = "恒常収益", val = actualRevenue, suffix = "万/月±30%" })
+    else
+      -- 開発期は収益なし
+      table.insert(result, { text = "実装完了（運営期開始で収益発生）" })
+    end
+    -- 流行は開発期も適用（リリース時の補正に影響）
+    if state.phase == "ops" then
+      state.trend = state.trend + item.trend
+      table.insert(result, { label = "流行", val = item.trend })
+    end
 
   elseif item.type == "limited_gacha" then
     -- 限定ガチャ：当月のみ大きな収益、流行減少
@@ -1032,6 +1073,136 @@ function startAutoplay(count)
   showAutoplayResults()
 end
 
+-- ========================================
+-- オートプレイ戦略システム: スコアリング関数群
+-- ========================================
+
+-- 選択肢から効果を推定（簡易版）
+function estimateChoiceEffects(choice)
+  local effects = {
+    resourceGain = 0,  -- maxN/C/T合計増加量
+    trendGain = 0,     -- trend増加量
+    moneyGain = 0,     -- 資金増加量
+    isMinusEvent = false,
+    cost = 0,
+  }
+
+  if choice.type == "event" then
+    local evt = choice.data
+    effects.cost = (evt.costN or 0) + (evt.costC or 0) + (evt.costT or 0)
+    effects.isMinusEvent = (evt.type == "minus")
+    -- イベント定義から効果を推定（動的なため完全予測は困難）
+  elseif choice.type == "action" then
+    local act = choice.data
+    effects.cost = (act.costN or 0) + (act.costC or 0) + (act.costT or 0)
+    -- アクション名から効果を推定
+    if act.name:find("広報") then
+      effects.resourceGain = 2
+      if state.phase == "ops" then effects.trendGain = 10 end
+    elseif act.name:find("コンテンツ") then
+      effects.resourceGain = 2
+      if state.phase == "ops" then effects.trendGain = 6 end
+    elseif act.name:find("技術") then
+      effects.resourceGain = 2
+    end
+  elseif choice.type == "item" then
+    effects.cost = 0  -- アイテムはリソース消費なし
+    -- アイテムの効果は多様なため個別に推定
+  end
+
+  return effects
+end
+
+-- 戦略1: リソース最大化
+function scoreResourceMax(choice, state)
+  local effects = estimateChoiceEffects(choice)
+  local score = effects.resourceGain * 10
+  score = score - effects.cost * 0.5  -- コスト効率
+  return score
+end
+
+-- 戦略2: 流行最大化
+function scoreTrendMax(choice, state)
+  local effects = estimateChoiceEffects(choice)
+  local score = effects.trendGain * 10
+  if score == 0 then
+    -- 流行効果がない場合はリソース最大化にフォールバック
+    score = effects.resourceGain * 3
+  end
+  score = score - effects.cost * 0.5
+  return score
+end
+
+-- 戦略3: 収益重視
+function scoreMoneyFirst(choice, state)
+  local effects = estimateChoiceEffects(choice)
+  local score = effects.moneyGain * 20
+
+  -- マイナスイベント対応は高優先度（-100万円ペナルティ回避）
+  if effects.isMinusEvent then
+    score = score + 100
+  end
+
+  -- 運営期は収益計算式への寄与度を重視
+  if state.phase == "ops" then
+    score = score + effects.resourceGain * 5
+    score = score + effects.trendGain * 3
+  end
+
+  -- 開発期はmaxN+maxCを重視
+  if state.phase == "dev" then
+    score = score + effects.resourceGain * 8
+  end
+
+  score = score - effects.cost * 0.5
+  return score
+end
+
+-- 戦略4: バランス型
+function scoreBalanced(choice, state)
+  -- フェーズと月に応じて戦略切り替え
+  if state.phase == "dev" then
+    return scoreResourceMax(choice, state)
+  elseif state.month <= DEV_MONTHS + 12 then  -- 運営1年目
+    return scoreTrendMax(choice, state)
+  elseif state.month <= DEV_MONTHS + 24 then  -- 運営2年目
+    return scoreMoneyFirst(choice, state)
+  else  -- 運営3年目
+    return scoreTrendMax(choice, state)
+  end
+end
+
+-- 戦略名からスコアリング関数を取得
+function getStrategyScorer(strategyName)
+  if strategyName == "ランダム" then
+    return nil  -- ランダムはスコアリング不要
+  elseif strategyName == "リソース最大化" then
+    return scoreResourceMax
+  elseif strategyName == "流行最大化" then
+    return scoreTrendMax
+  elseif strategyName == "収益重視" then
+    return scoreMoneyFirst
+  elseif strategyName == "バランス型" then
+    return scoreBalanced
+  end
+end
+
+-- 最良選択肢の選出
+function selectBestChoice(choices, scorer, state)
+  local bestChoice = nil
+  local bestScore = -999999
+
+  for _, choice in ipairs(choices) do
+    local score = scorer(choice, state)
+    if score > bestScore then
+      bestScore = score
+      bestChoice = choice
+    end
+  end
+
+  return bestChoice or choices[1]  -- フォールバック
+end
+
 -- 1ゲーム全体を同期的に実行
 function runSingleAutoplayGame()
   -- シード設定（再現性のため）
@@ -1056,7 +1227,14 @@ function runSingleAutoplayGame()
       if state.actionsRemaining > 0 then
         local choices = getAvailableChoices()
         if #choices > 0 then
-          local choice = choices[math.random(#choices)]
+          -- 戦略に応じた選択
+          local choice
+          if autoplayStrategy == "ランダム" then
+            choice = choices[math.random(#choices)]
+          else
+            local scorer = getStrategyScorer(autoplayStrategy)
+            choice = selectBestChoice(choices, scorer, state)
+          end
           executeAutoChoice(choice)
         else
           break
@@ -1246,6 +1424,7 @@ end
 function recordAutoplayResult(result)
   local record = {
     runNumber = autoplayCurrentRun,
+    strategy = autoplayStrategy,  -- 戦略名を追加
     result = result,  -- "clear" or "gameover"
     finalMonth = state.month,
     finalMoney = state.money,
@@ -1304,12 +1483,13 @@ end
 
 -- オートプレイ結果をCSV出力
 function writeAutoplayCSV()
-  local csv = "流行減衰率,実行番号,結果,最終月,最終資金,流行,maxN,maxC,maxT,ストア評価,セルラン,借金完済,セルラン1位\n"
+  local csv = "流行減衰率,戦略,実行番号,結果,最終月,最終資金,流行,maxN,maxC,maxT,ストア評価,セルラン,借金完済,セルラン1位\n"
 
   for _, result in ipairs(autoplayResults) do
     csv = csv .. string.format(
-      "%d,%d,%s,%d,%d,%d,%d,%d,%d,%.1f,%d,%s,%s\n",
+      "%d,%s,%d,%s,%d,%d,%d,%d,%d,%d,%.1f,%d,%s,%s\n",
       autoplayTrendDecay,
+      result.strategy,  -- 戦略名を追加
       result.runNumber,
       result.result,
       result.finalMonth,
@@ -1411,6 +1591,8 @@ function processMonthStart()
   -- subStateを直接設定
   subState = "action_select"
   selectedIndex = 1
+  lastLeftColIndex = 1  -- 月初はリセット
+  lastRightColIndex = 1
   isMonthStarted = true
   lastActionResult = {}  -- 前回の結果をクリア
 end
@@ -1536,8 +1718,24 @@ end
 
 function executeRelease()
   state.phase = "ops"
-  -- 流行指数を決定
-  state.trend = state.maxN + state.maxC + math.random(-20, 20)
+
+  -- 基本流行指数を決定
+  local baseTrend = state.maxN + state.maxC + math.random(-20, 20)
+
+  -- 恒常アイテム数をカウント（開発期に実装した恒常コンテンツ・恒常ガチャ）
+  local permanentItemCount = 0
+  for _, item in ipairs(state.items) do
+    if item.type == "permanent_content" or item.type == "permanent_gacha" then
+      permanentItemCount = permanentItemCount + 1
+    end
+  end
+
+  -- 恒常アイテム補正：1個につき+3
+  local permanentBonus = permanentItemCount * 3
+
+  -- 最終流行指数
+  state.trend = baseTrend + permanentBonus
+
   -- リリース時のボーナスなし（借金-2000のまま運営開始）
 end
 
@@ -1616,20 +1814,41 @@ function love.keypressed(key)
   elseif gameState == "game" then
     if subState == "action_select" then
       -- 選択処理
+      local actions = state.phase == "dev" and devActions or opsActions
+      local unhandledEventsCount = 0
+      for _, evt in ipairs(state.currentMonthEvents) do
+        local handled = false
+        for _, id in ipairs(state.handledEvents) do
+          if id == evt.id then handled = true break end
+        end
+        if not handled then unhandledEventsCount = unhandledEventsCount + 1 end
+      end
+      local leftColMax = unhandledEventsCount + #actions
+      local maxIdx = leftColMax + #state.items
+
       if key == "up" then
         selectedIndex = math.max(1, selectedIndex - 1)
       elseif key == "down" then
-        local actions = state.phase == "dev" and devActions or opsActions
-        local unhandledEvents = 0
-        for _, evt in ipairs(state.currentMonthEvents) do
-          local handled = false
-          for _, id in ipairs(state.handledEvents) do
-            if id == evt.id then handled = true break end
-          end
-          if not handled then unhandledEvents = unhandledEvents + 1 end
-        end
-        local maxIdx = unhandledEvents + #actions + #state.items
         selectedIndex = math.min(maxIdx, selectedIndex + 1)
+      elseif key == "left" then
+        -- 右カラムから左カラムへ移動
+        if selectedIndex > leftColMax and leftColMax > 0 then
+          -- 現在の右カラム内の位置を記憶
+          lastRightColIndex = selectedIndex - leftColMax
+          -- 左カラムの前回位置に移動（範囲チェック）
+          selectedIndex = math.min(lastLeftColIndex, leftColMax)
+          if selectedIndex < 1 then selectedIndex = 1 end
+        end
+      elseif key == "right" then
+        -- 左カラムから右カラムへ移動
+        if selectedIndex <= leftColMax and #state.items > 0 then
+          -- 現在の左カラムの位置を記憶
+          lastLeftColIndex = selectedIndex
+          -- 右カラムの前回位置に移動（範囲チェック）
+          local targetIdx = leftColMax + math.min(lastRightColIndex, #state.items)
+          if targetIdx > maxIdx then targetIdx = leftColMax + 1 end
+          selectedIndex = targetIdx
+        end
       elseif key == "space" or key == "return" then
         -- 未対応イベント数をカウント
         local unhandledEvents = {}
@@ -1647,13 +1866,14 @@ function love.keypressed(key)
           local evt = unhandledEvents[selectedIndex]
           if canAffordAction(evt) then
             lastActionResult = handleEvent(evt)
+            -- 左カラムの位置を記憶
+            lastLeftColIndex = selectedIndex
             -- 月末判定
             if state.actionsRemaining == 0 then
               processMonthEnd()
               subState = "month_end"
-            else
-              selectedIndex = 1
             end
+            -- 選択位置はそのまま維持
           end
         else
           local actions = state.phase == "dev" and devActions or opsActions
@@ -1663,13 +1883,14 @@ function love.keypressed(key)
             local action = actions[actionIdx]
             if canAffordAction(action) then
               lastActionResult = executeAction(action)
+              -- 左カラムの位置を記憶
+              lastLeftColIndex = selectedIndex
               -- 月末判定
               if state.actionsRemaining == 0 then
                 processMonthEnd()
                 subState = "month_end"
-              else
-                selectedIndex = 1
               end
+              -- 選択位置はそのまま維持
             end
           else
             -- アイテム使用
@@ -1677,9 +1898,34 @@ function love.keypressed(key)
             if itemIdx >= 1 and itemIdx <= #state.items then
               local item = state.items[itemIdx]
               lastActionResult = useItem(item)
-              table.remove(state.items, itemIdx)
+
+              -- 使用制限チェック（開発期の限定アイテムなど）
+              local isRestricted = false
+              if #lastActionResult > 0 and lastActionResult[1].text then
+                if lastActionResult[1].text:find("使用できません") then
+                  isRestricted = true
+                end
+              end
+
+              -- 制限されていなければアイテムを削除
+              if not isRestricted then
+                -- 右カラムの位置を記憶（相対位置）
+                lastRightColIndex = itemIdx
+                table.remove(state.items, itemIdx)
+                -- アイテムを削除した後の位置調整
+                -- アイテムが減ったので、範囲チェック
+                if #state.items > 0 then
+                  -- アイテムがまだある場合、同じ位置か1つ前に移動
+                  local newItemIdx = math.min(itemIdx, #state.items)
+                  selectedIndex = leftColMax + newItemIdx
+                  lastRightColIndex = newItemIdx
+                else
+                  -- アイテムがなくなった場合、左カラムに移動
+                  selectedIndex = math.min(lastLeftColIndex, leftColMax)
+                  if selectedIndex < 1 then selectedIndex = 1 end
+                end
+              end
               -- アイテムは行動消費なし
-              selectedIndex = 1
             end
           end
         end
@@ -1695,22 +1941,41 @@ function love.keypressed(key)
       end
     end
   elseif gameState == "autoplay_menu" then
-    if key == "escape" then
-      gameState = "title"
-    elseif key == "return" or key == "space" then
+    if key == "return" or key == "kpenter" then
       -- 実行開始
       local count = tonumber(autoplayInputBuffer)
-      if count == nil or count < 1 then count = 100 end  -- デフォルト100
-      if count > 10000 then count = 10000 end
-
+      if not count or count < 1 or count > 10000 then count = 100 end
+      autoplayStrategy = autoplayStrategies[autoplayStrategyIndex]
       startAutoplay(count)
+    elseif key == "escape" then
+      gameState = "title"
+    elseif key == "up" then
+      if autoplayInputField == "strategy" then
+        autoplayStrategyIndex = autoplayStrategyIndex - 1
+        if autoplayStrategyIndex < 1 then autoplayStrategyIndex = #autoplayStrategies end
+      end
+    elseif key == "down" then
+      if autoplayInputField == "strategy" then
+        autoplayStrategyIndex = autoplayStrategyIndex + 1
+        if autoplayStrategyIndex > #autoplayStrategies then autoplayStrategyIndex = 1 end
+      end
+    elseif key == "tab" then
+      if autoplayInputField == "count" then
+        autoplayInputField = "strategy"
+      else
+        autoplayInputField = "count"
+      end
     elseif key == "backspace" then
-      autoplayInputBuffer = string.sub(autoplayInputBuffer, 1, -2)
+      if autoplayInputField == "count" then
+        autoplayInputBuffer = autoplayInputBuffer:sub(1, -2)
+      end
     else
-      -- 数字入力
-      local num = tonumber(key)
-      if num and #autoplayInputBuffer < 5 then
-        autoplayInputBuffer = autoplayInputBuffer .. key
+      -- 数値入力
+      if autoplayInputField == "count" then
+        local num = tonumber(key)
+        if num and #autoplayInputBuffer < 5 then
+          autoplayInputBuffer = autoplayInputBuffer .. key
+        end
       end
     end
   elseif gameState == "settings" then
@@ -1859,28 +2124,55 @@ end
 function drawAutoplayMenuScreen()
   love.graphics.setFont(titleFont)
   love.graphics.setColor(1, 1, 1)
-  boldPrintf("オートプレイモード", 0, 150, BASE_W, "center")
+  boldPrintf("オートプレイモード", 0, 100, BASE_W, "center")
 
+  -- 実行回数入力
   love.graphics.setFont(menuFont)
-  boldPrintf("実行回数を入力してください（1～10000）", 0, 250, BASE_W, "center")
-
-  -- 入力ボックス表示
-  love.graphics.setColor(0.5, 0.5, 0.2)
-  love.graphics.rectangle("fill", 300, 300, 200, 40)
   love.graphics.setColor(1, 1, 1)
-  love.graphics.setFont(menuFont)
-  local countText = autoplayInputBuffer == "" and "100" or autoplayInputBuffer
-  boldPrint(countText .. "_", 320, 310)
+  boldPrint("実行回数: ", 250, 180)
 
-  -- 現在の設定を表示
+  love.graphics.setColor(0.5, 0.5, 0.2)
+  love.graphics.rectangle("fill", 380, 175, 150, 30)
+  love.graphics.setColor(1, 1, 1)
+  local countText = autoplayInputBuffer == "" and "100" or autoplayInputBuffer
+  if autoplayInputField == "count" then
+    boldPrint(countText .. "_", 390, 180)
+  else
+    boldPrint(countText, 390, 180)
+  end
+
+  -- 戦略選択
+  love.graphics.setFont(menuFont)
+  love.graphics.setColor(1, 1, 1)
+  boldPrint("戦略:", 250, 240)
+
+  local startY = 240
+  for i, strategyName in ipairs(autoplayStrategies) do
+    local y = startY + (i - 1) * 25
+    if i == autoplayStrategyIndex then
+      love.graphics.setColor(1, 1, 0)  -- 選択中は黄色
+      boldPrint("→ " .. i .. ": " .. strategyName, 280, y)
+    else
+      love.graphics.setColor(0.7, 0.7, 0.7)
+      boldPrint("   " .. i .. ": " .. strategyName, 280, y)
+    end
+  end
+
+  -- 戦略説明
+  love.graphics.setFont(smallFont)
+  love.graphics.setColor(0.8, 0.8, 1)
+  local desc = autoplayStrategyDescriptions[autoplayStrategies[autoplayStrategyIndex]]
+  boldPrintf(desc, 0, 390, BASE_W, "center")
+
+  -- 設定情報
   love.graphics.setFont(smallFont)
   love.graphics.setColor(0.8, 0.8, 0.8)
-  boldPrintf("使用される設定: 流行減衰率 = " .. autoplayTrendDecay .. "/月", 0, 380, BASE_W, "center")
-  boldPrintf("※設定を変更する場合は「3: ゲーム設定」から", 0, 410, BASE_W, "center")
+  boldPrintf("使用される設定: 流行減衰率 = " .. autoplayTrendDecay .. "/月", 0, 450, BASE_W, "center")
 
+  -- 操作説明
   love.graphics.setFont(smallFont)
   love.graphics.setColor(1, 1, 0)
-  boldPrintf("Enter: 実行開始  ESC: タイトルに戻る", 0, 480, BASE_W, "center")
+  boldPrintf("↑↓: 戦略選択  Tab: フィールド切替  Enter: 実行開始  ESC: 戻る", 0, 520, BASE_W, "center")
 end
 
 function drawAutoplayRunningScreen()
@@ -1962,36 +2254,22 @@ function drawActionSelectScreen()
   boldPrint("N:" .. state.N .. "/" .. state.maxN .. "  C:" .. state.C .. "/" .. state.maxC .. "  T:" .. state.T .. "/" .. state.maxT, 50, 70)
   boldPrint("資金: " .. state.money .. "万  残り行動: " .. state.actionsRemaining, 50, 100)
 
-  -- 運営期の場合はセルランも表示
+  -- 運営期の場合はセルラン・流行指数も表示
   if state.phase == "ops" then
     love.graphics.setFont(tinyFont)
-    boldPrint("セルラン: " .. state.storeRanking .. "位  ストア評価: " .. string.rep("★", state.storeRating) .. string.rep("☆", 5 - state.storeRating), 50, 125)
+    boldPrint("セルラン: " .. state.storeRanking .. "位  ストア評価: " .. string.rep("★", state.storeRating) .. string.rep("☆", 5 - state.storeRating) .. "  流行: " .. state.trend, 50, 125)
     love.graphics.setFont(smallFont)
   end
 
-  -- 未来イベント予告（右カラム）
-  local futureY = state.phase == "ops" and 150 or 130
-  if #state.futureEvents > 0 then
-    love.graphics.setFont(tinyFont)
-    love.graphics.setColor(1, 1, 1)
-    boldPrint("今後の予定（3ヶ月先まで）:", 420, futureY)
-    for i, futureEvt in ipairs(state.futureEvents) do
-      local color = futureEvt.type == "plus" and {0.7, 1, 0.7} or {1, 0.7, 0.7}
-      love.graphics.setColor(color)
-      boldPrint(futureEvt.month .. "ヶ月目: " .. futureEvt.name, 440, futureY + i * 18)
-    end
-  end
-
-  -- 前回の行動結果表示エリア
-  local resultY = state.phase == "ops" and 175 or 155
+  -- 前回の行動結果表示エリア（右上に移動）
   if #lastActionResult > 0 then
     love.graphics.setFont(smallFont)
     love.graphics.setColor(0.5, 1, 1)  -- シアン系
-    boldPrint("【前回の結果】", 50, resultY)
+    boldPrint("【前回の結果】", 480, 30)
     love.graphics.setFont(tinyFont)
-    local y = resultY + 22
-    -- 最大3行まで表示
-    for i = 1, math.min(3, #lastActionResult) do
+    local resultY = 55
+    -- 最大5行まで表示
+    for i = 1, math.min(5, #lastActionResult) do
       local r = lastActionResult[i]
       local text
       if r.text then
@@ -1999,13 +2277,13 @@ function drawActionSelectScreen()
       else
         text = "> " .. r.label .. ": " .. (r.val >= 0 and "+" or "") .. r.val .. (r.suffix or "")
       end
-      boldPrint(text, 70, y)
-      y = y + 18
+      boldPrint(text, 500, resultY)
+      resultY = resultY + 16
     end
   end
 
-  -- 選択肢表示
-  local y = #lastActionResult > 0 and (state.phase == "ops" and 245 or 225) or (state.phase == "ops" and 200 or 180)
+  -- 選択肢表示（前回の結果が左から消えたので、Y座標を調整）
+  local y = state.phase == "ops" and 175 or 155
   local idx = 1
 
   -- 未処理イベント数を計算
@@ -2023,6 +2301,85 @@ function drawActionSelectScreen()
     end
   end
 
+  -- 右カラム：未来イベント予告とアイテム一覧
+  local rightColX = 420
+  local rightColY = state.phase == "ops" and 150 or 130
+
+  -- 未来イベント予告
+  if #state.futureEvents > 0 then
+    love.graphics.setFont(tinyFont)
+    love.graphics.setColor(1, 1, 1)
+    boldPrint("今後の予定（3ヶ月先まで）:", rightColX, rightColY)
+    for i, futureEvt in ipairs(state.futureEvents) do
+      local color = futureEvt.type == "plus" and {0.7, 1, 0.7} or {1, 0.7, 0.7}
+      love.graphics.setColor(color)
+      boldPrint(futureEvt.month .. "ヶ月目: " .. futureEvt.name, rightColX + 20, rightColY + i * 18)
+    end
+    rightColY = rightColY + (#state.futureEvents + 1) * 18 + 10
+  end
+
+  -- アイテム一覧（右カラム）
+  if #state.items > 0 then
+    love.graphics.setFont(smallFont)
+    love.graphics.setColor(1, 1, 1)
+    boldPrint("【アイテム】 " .. #state.items .. "個", rightColX, rightColY)
+    rightColY = rightColY + 25
+
+    love.graphics.setFont(tinyFont)
+    love.graphics.setColor(0.7, 0.7, 0.7)
+    boldPrint("（行動消費なし）", rightColX + 10, rightColY)
+    rightColY = rightColY + 20
+
+    -- スクロール表示の準備
+    local maxVisibleItems = 18  -- 右カラムは広いので多く表示
+    local actions = state.phase == "dev" and devActions or opsActions
+    local itemListStartIdx = #unhandledEvents + #actions + 1
+    local selectedItemIdx = selectedIndex >= itemListStartIdx and (selectedIndex - itemListStartIdx + 1) or 0
+
+    if selectedItemIdx > 0 and selectedItemIdx <= #state.items then
+      if selectedItemIdx > itemScrollOffset + maxVisibleItems then
+        itemScrollOffset = selectedItemIdx - maxVisibleItems
+      elseif selectedItemIdx <= itemScrollOffset then
+        itemScrollOffset = selectedItemIdx - 1
+      end
+      itemScrollOffset = math.max(0, math.min(itemScrollOffset, math.max(0, #state.items - maxVisibleItems)))
+    end
+
+    -- スクロール表示（scissorでクリッピング）
+    local itemAreaY = rightColY
+    local itemAreaHeight = 360  -- 右カラムの残りスペース
+    love.graphics.setScissor(rightColX, itemAreaY, 340, itemAreaHeight)
+
+    for i = itemScrollOffset + 1, math.min(itemScrollOffset + maxVisibleItems, #state.items) do
+      local item = state.items[i]
+      local globalIdx = itemListStartIdx + (i - 1)
+      local relativeY = itemAreaY + (i - itemScrollOffset - 1) * 20
+      local isSelected = globalIdx == selectedIndex
+      local color = isSelected and {1, 1, 0} or {0.5, 1, 1}
+      love.graphics.setColor(color)
+
+      -- カーソル表示
+      local cursor = isSelected and "→ " or "  "
+      boldPrint(cursor .. globalIdx .. ". " .. item.name, rightColX, relativeY)
+
+      -- 説明をグレーで表示
+      love.graphics.setColor(isSelected and {0.9, 0.9, 0.7} or {0.5, 0.5, 0.5})
+      boldPrint("     " .. item.desc, rightColX + 5, relativeY + 10)
+    end
+
+    love.graphics.setScissor()
+
+    -- スクロールバー表示
+    if #state.items > maxVisibleItems then
+      love.graphics.setColor(0.3, 0.3, 0.3)
+      love.graphics.rectangle("fill", rightColX + 345, itemAreaY, 5, itemAreaHeight)
+      love.graphics.setColor(1, 1, 1)
+      local barHeight = itemAreaHeight * (maxVisibleItems / #state.items)
+      local scrollPercent = itemScrollOffset / (#state.items - maxVisibleItems)
+      love.graphics.rectangle("fill", rightColX + 345, itemAreaY + scrollPercent * (itemAreaHeight - barHeight), 5, barHeight)
+    end
+  end
+
   -- イベント対応（統合表示）
   if #unhandledEvents > 0 then
     love.graphics.setFont(smallFont)
@@ -2032,14 +2389,18 @@ function drawActionSelectScreen()
 
     love.graphics.setFont(tinyFont)
     for i, evt in ipairs(unhandledEvents) do
-      local nameColor = idx == selectedIndex and {1, 1, 0} or (evt.type == "plus" and {0.5, 1, 0.5} or {1, 0.5, 0.5})
+      local isSelected = idx == selectedIndex
+      local nameColor = isSelected and {1, 1, 0} or (evt.type == "plus" and {0.5, 1, 0.5} or {1, 0.5, 0.5})
       love.graphics.setColor(nameColor)
-      boldPrint((idx) .. ". " .. evt.name .. " (N:" .. evt.costN .. " C:" .. evt.costC .. " T:" .. evt.costT .. ")", 70, y)
-      
+
+      -- カーソル表示
+      local cursor = isSelected and "→ " or "  "
+      boldPrint(cursor .. (idx) .. ". " .. evt.name .. " (N:" .. evt.costN .. " C:" .. evt.costC .. " T:" .. evt.costT .. ")", 50, y)
+
       -- 詳細説明を追加（グレー）
       love.graphics.setColor(0.7, 0.7, 0.7)
-      boldPrint("   " .. evt.desc, 90, y + 13)
-      
+      boldPrint("     " .. evt.desc, 70, y + 13)
+
       y = y + 30
       idx = idx + 1
     end
@@ -2055,66 +2416,23 @@ function drawActionSelectScreen()
 
   local actions = state.phase == "dev" and devActions or opsActions
   for i, act in ipairs(actions) do
-    local color = idx == selectedIndex and {1, 1, 0} or {1, 1, 1}
+    local isSelected = idx == selectedIndex
+    local color = isSelected and {1, 1, 0} or {1, 1, 1}
     love.graphics.setColor(color)
-    boldPrint((idx) .. ". " .. act.name .. " (N:" .. act.costN .. " C:" .. act.costC .. " T:" .. act.costT .. ")", 70, y)
+
+    -- カーソル表示
+    local cursor = isSelected and "→ " or "  "
+    boldPrint(cursor .. (idx) .. ". " .. act.name .. " (N:" .. act.costN .. " C:" .. act.costC .. " T:" .. act.costT .. ")", 50, y)
     y = y + 20
     idx = idx + 1
   end
 
-  -- アイテム（スクロール表示）
-  if #state.items > 0 then
-    y = y + 8
-    love.graphics.setFont(smallFont)
-    love.graphics.setColor(1, 1, 1)
-    boldPrint("【アイテム使用】（行動消費なし） " .. #state.items .. "個", 50, y)
-    y = y + 25
-
-    -- スクロールオフセット計算
-    local maxVisibleItems = 4
-    local selectedItemIdx = selectedIndex - #unhandledEvents - #actions
-
-    if selectedItemIdx > 0 and selectedItemIdx <= #state.items then
-      if selectedItemIdx > itemScrollOffset + maxVisibleItems then
-        itemScrollOffset = selectedItemIdx - maxVisibleItems
-      elseif selectedItemIdx <= itemScrollOffset then
-        itemScrollOffset = selectedItemIdx - 1
-      end
-      itemScrollOffset = math.max(0, math.min(itemScrollOffset, math.max(0, #state.items - maxVisibleItems)))
-    end
-
-    -- スクロール表示（scissorでクリッピング）
-    local itemAreaY = y
-    love.graphics.setScissor(50, itemAreaY, 710, 80)
-    love.graphics.setFont(tinyFont)
-
-    for i = itemScrollOffset + 1, math.min(itemScrollOffset + maxVisibleItems, #state.items) do
-      local item = state.items[i]
-      local relativeIdx = i - itemScrollOffset
-      local globalIdx = idx + (i - itemScrollOffset - 1)
-      local color = globalIdx == selectedIndex and {1, 1, 0} or {0.5, 1, 1}
-      love.graphics.setColor(color)
-      boldPrint(globalIdx .. ". " .. item.name .. " (" .. item.desc .. ")", 70, itemAreaY + (relativeIdx - 1) * 20)
-    end
-
-    love.graphics.setScissor()
-
-    -- スクロールバー表示
-    if #state.items > maxVisibleItems then
-      love.graphics.setColor(0.3, 0.3, 0.3)
-      love.graphics.rectangle("fill", 760, itemAreaY, 5, 80)
-      love.graphics.setColor(1, 1, 1)
-      local barHeight = 80 * (maxVisibleItems / #state.items)
-      local scrollPercent = itemScrollOffset / (#state.items - maxVisibleItems)
-      love.graphics.rectangle("fill", 760, itemAreaY + scrollPercent * (80 - barHeight), 5, barHeight)
-    end
-
-    idx = idx + #state.items
-  end
+  -- アイテム選択肢のインデックスカウント
+  idx = idx + #state.items
 
   love.graphics.setFont(tinyFont)
   love.graphics.setColor(1, 1, 1)
-  boldPrint("↑↓: Select  SPACE: Execute", 50, 560)
+  boldPrint("↑↓: Select  ←→: Column Switch  SPACE: Execute", 50, 560)
 end
 
 function drawMonthEndScreen()
