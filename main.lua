@@ -14,13 +14,17 @@ local config = {
     maxMonths = 36,
     initialMoney = 2000,        -- 万円
     baseActionCost = 100,       -- 万円
-    actionCostMultiplier = 1.4,
+    actionCostMultiplier = 1.6,
+
+    -- 経済システム
+    monthlyFixedCost = 400,     -- 毎月固定費(万円)
 
     -- 炎上システム
     fireBaseRate = 5,           -- 基礎炎上率(%)
     fireRatePerAction = 4,      -- 行動ごとの増加率(%)
-    fireMoneyLoss = 0.3,        -- 資金減少率
-    fireUserLoss = 0.15,        -- ユーザ減少率
+    fireMoneyLoss = 0.4,        -- 資金減少率
+    fireRatingLoss = 2,         -- 評価減少
+    fireUserLoss = 0.35,        -- ユーザ減少率
 
     -- アイテム効果
     gachaItemRevenue = 0.10,    -- 収益+10%
@@ -29,6 +33,7 @@ local config = {
 
     -- ユーザ変動
     newUserPerFame = 100,       -- 知名度あたりの新規ユーザ
+    userNaturalDecayRate = 0.06,-- 自然減衰率
     leaveRateBase = 6,          -- 離脱率計算の基礎値
     leaveRateMultiplier = 0.03, -- 離脱率の倍率
 
@@ -115,6 +120,7 @@ local currentMessage = ""
 -- 設定画面用
 local settingsCategories = {
     "基本設定",
+    "経済システム",
     "炎上システム",
     "アイテム効果",
     "ユーザ変動",
@@ -329,14 +335,14 @@ function checkFire()
         local userLoss = math.floor(state.users * config.fireUserLoss)
 
         state.money = state.money - moneyLoss
-        state.rating = math.max(1, state.rating - 1)
+        state.rating = math.max(1, state.rating - config.fireRatingLoss)
         state.users = math.max(0, state.users - userLoss)
 
         state.fireResult = {
             happened = true,
             rate = fireRate,
             moneyLoss = moneyLoss,
-            ratingLoss = 1,
+            ratingLoss = config.fireRatingLoss,
             userLoss = userLoss,
         }
 
@@ -380,6 +386,12 @@ function processMonthEnd()
     result.leaveUsers = leaveUsers
     result.leaveRate = leaveRate * 100
 
+    -- 自然減衰
+    local decayUsers = math.floor(state.users * config.userNaturalDecayRate)
+    state.users = math.max(0, state.users - decayUsers)
+    result.decayUsers = decayUsers
+    result.decayRate = config.userNaturalDecayRate * 100
+
     -- 収益計算
     local ratingMultiplier = config.ratingMultipliers[state.rating] or 1.0
 
@@ -399,6 +411,10 @@ function processMonthEnd()
     state.money = state.money + revenue
     result.revenue = revenue
     result.ratingMultiplier = ratingMultiplier
+
+    -- 固定費
+    state.money = state.money - config.monthlyFixedCost
+    result.fixedCost = config.monthlyFixedCost
 
     -- セルラン更新
     if state.users > 100000 then
@@ -780,13 +796,17 @@ function buildSettingsItems()
             {name = "最大月数", key = "maxMonths", min = 12, max = 120, step = 6},
             {name = "初期資金(万円)", key = "initialMoney", min = 500, max = 5000, step = 100},
             {name = "基本行動コスト", key = "baseActionCost", min = 50, max = 500, step = 10},
-            {name = "コスト倍率", key = "actionCostMultiplier", min = 1.1, max = 2.0, step = 0.1, decimal = true},
+            {name = "行動コスト倍率", key = "actionCostMultiplier", min = 1.1, max = 2.5, step = 0.1, decimal = true},
+        },
+        ["経済システム"] = {
+            {name = "毎月固定費(万円)", key = "monthlyFixedCost", min = 0, max = 1000, step = 50},
         },
         ["炎上システム"] = {
             {name = "基礎炎上率(%)", key = "fireBaseRate", min = 0, max = 20, step = 1},
             {name = "行動毎増加率(%)", key = "fireRatePerAction", min = 1, max = 10, step = 1},
-            {name = "資金減少率", key = "fireMoneyLoss", min = 0.1, max = 0.5, step = 0.05, decimal = true},
-            {name = "ユーザ減少率", key = "fireUserLoss", min = 0.05, max = 0.3, step = 0.05, decimal = true},
+            {name = "資金減少率", key = "fireMoneyLoss", min = 0.1, max = 0.8, step = 0.05, decimal = true},
+            {name = "評価減少", key = "fireRatingLoss", min = 1, max = 4, step = 1},
+            {name = "ユーザ減少率", key = "fireUserLoss", min = 0.05, max = 0.6, step = 0.05, decimal = true},
         },
         ["アイテム効果"] = {
             {name = "ガチャ収益率", key = "gachaItemRevenue", min = 0.05, max = 0.30, step = 0.05, decimal = true},
@@ -795,6 +815,7 @@ function buildSettingsItems()
         },
         ["ユーザ変動"] = {
             {name = "知名度あたり新規", key = "newUserPerFame", min = 50, max = 500, step = 50},
+            {name = "自然減衰率", key = "userNaturalDecayRate", min = 0.0, max = 0.20, step = 0.01, decimal = true},
             {name = "初期ユーザ数", key = "initialUsers", min = 500, max = 5000, step = 500},
             {name = "離脱率基礎値", key = "leaveRateBase", min = 4, max = 10, step = 1},
             {name = "離脱率倍率", key = "leaveRateMultiplier", min = 0.01, max = 0.10, step = 0.01, decimal = true},
@@ -1545,10 +1566,18 @@ function drawMonthEndScreen()
 
     love.graphics.setColor(1, 0.5, 0.5)
     boldPrint(string.format("離脱ユーザ: -%s (離脱率%.1f%%)", formatNumber(result.leaveUsers), result.leaveRate), x, y)
+    y = y + 25
+
+    love.graphics.setColor(1, 0.3, 0.3)
+    boldPrint(string.format("自然減衰: -%s (減衰率%.1f%%)", formatNumber(result.decayUsers), result.decayRate), x, y)
     y = y + 35
 
     love.graphics.setColor(1, 1, 0.5)
     boldPrint(string.format("収益: +%s (評価補正×%.1f)", formatMoney(result.revenue), result.ratingMultiplier), x, y)
+    y = y + 25
+
+    love.graphics.setColor(1, 0.4, 0.4)
+    boldPrint("固定費: -" .. formatMoney(result.fixedCost), x, y)
     y = y + 25
 
     love.graphics.setColor(1, 1, 1)
