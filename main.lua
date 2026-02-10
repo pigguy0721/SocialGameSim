@@ -37,22 +37,19 @@ CHAR_LIFETIME = 3         -- キャラクターの寿命：3ヶ月
 -- ===== デバッグモード =====
 local DEBUG_MODE = false  -- true にすると追加情報を表示
 
--- ===== レアリティ確率テーブル =====
+-- ===== レアリティ確率テーブル（動的生成） =====
 --[[
   ガチャで排出されるキャラクターのレアリティと確率
-  合計確率 = 100%
-
-  N（ノーマル）: 60% - 最も出やすいが効果は低い
-  R（レア）: 25% - そこそこのレア度
-  SR（スーパーレア）: 10% - かなりレア
-  SSR（スーパースーパーレア）: 5% - 最高レア、最も強力
+  グローバル変数GACHA_PROB_*から動的に構築
 ]]
-local gachaTable = {
-  {rarity="N", prob=0.60},    -- 60%の確率
-  {rarity="R", prob=0.25},    -- 25%の確率
-  {rarity="SR", prob=0.10},   -- 10%の確率
-  {rarity="SSR", prob=0.05}   -- 5%の確率
-}
+local function buildGachaTable()
+  return {
+    {rarity="N", prob=GACHA_PROB_N},
+    {rarity="R", prob=GACHA_PROB_R},
+    {rarity="SR", prob=GACHA_PROB_SR},
+    {rarity="SSR", prob=GACHA_PROB_SSR}
+  }
+end
 
 -- ===== 効果タイプ =====
 --[[
@@ -143,18 +140,54 @@ BASE_REVENUE = 200000           -- 基礎収益：20万円/月
 BASE_MAINTENANCE = 150000       -- 維持費：15万円/月
 FIRE_PENALTY_MONEY = 0.40       -- 炎上時の資金減少率：40%
 FIRE_PENALTY_REPUTATION = 2     -- 炎上時の評価減少：-2
-local EMPTY_SLOT_PENALTY = 15   -- 空枠1つあたりのバランススコアペナルティ：+15（固定）
+
+-- バランススコア関連（グローバル化）
+BALANCE_SCORE_MULTIPLIER = 30   -- 標準偏差に乗算する係数
+EMPTY_SLOT_PENALTY = 15         -- 空枠1つあたりのペナルティ
+
+-- 炎上確率関連（グローバル化）
+FIRE_BALANCE_FACTOR = 0.005     -- バランススコア係数（0.5%）
+FIRE_REPUTATION_FACTOR = 0.02   -- 評価係数（2%）
+FIRE_MAX_PROBABILITY = 0.80     -- 炎上確率の上限（80%）
+
+-- 初期評価
+INITIAL_REPUTATION = 5          -- 初期評価値（0-10）
+
+-- レアリティ確率（グローバル化）
+GACHA_PROB_N = 0.60             -- N確率（60%）
+GACHA_PROB_R = 0.25             -- R確率（25%）
+GACHA_PROB_SR = 0.10            -- SR確率（10%）
+GACHA_PROB_SSR = 0.05           -- SSR確率（5%）
 
 -- デフォルト値保存用
 local DEFAULT_VALUES = {
+  -- 基本設定
   WIN_MONTHS = 36,
   INITIAL_MONEY = 3000000,
   GACHA_COST = 100000,
   CHAR_LIFETIME = 3,
+  INITIAL_REPUTATION = 5,
+  
+  -- 経済設定
   BASE_REVENUE = 200000,
   BASE_MAINTENANCE = 150000,
+  
+  -- 炎上設定
   FIRE_PENALTY_MONEY = 0.40,
-  FIRE_PENALTY_REPUTATION = 2
+  FIRE_PENALTY_REPUTATION = 2,
+  FIRE_BALANCE_FACTOR = 0.005,
+  FIRE_REPUTATION_FACTOR = 0.02,
+  FIRE_MAX_PROBABILITY = 0.80,
+  
+  -- バランス設定
+  BALANCE_SCORE_MULTIPLIER = 30,
+  EMPTY_SLOT_PENALTY = 15,
+  
+  -- レアリティ確率
+  GACHA_PROB_N = 0.60,
+  GACHA_PROB_R = 0.25,
+  GACHA_PROB_SR = 0.10,
+  GACHA_PROB_SSR = 0.05
 }
 
 -- ============================================================
@@ -299,18 +332,54 @@ local selectedSlotIndex = nil    -- 編成画面で選択中のスロットIndex
 local gachaResults = {}     -- 今月引いたガチャ結果の履歴
 local monthReport = {}      -- 月末処理の結果レポート
 
--- ゲーム設定画面
+-- ゲーム設定画面（カテゴリ分け）
 local settingsMenu = {
-  items = {
-    {name="初期資金", key="INITIAL_MONEY", min=1000000, max=10000000, step=500000, format=formatMoney},
-    {name="ガチャコスト", key="GACHA_COST", min=50000, max=500000, step=10000, format=formatMoney},
-    {name="基礎維持費", key="BASE_MAINTENANCE", min=50000, max=500000, step=10000, format=formatMoney},
-    {name="基礎収益", key="BASE_REVENUE", min=100000, max=500000, step=10000, format=formatMoney},
-    {name="炎上資金減少率", key="FIRE_PENALTY_MONEY", min=0.1, max=0.8, step=0.05, format=function(v) return string.format("%.0f%%", v*100) end},
-    {name="炎上評価減少", key="FIRE_PENALTY_REPUTATION", min=1, max=5, step=1, format=function(v) return string.format("%d", v) end},
-    {name="クリア月数", key="WIN_MONTHS", min=12, max=60, step=6, format=function(v) return string.format("%dヶ月", v) end},
-    {name="キャラ寿命", key="CHAR_LIFETIME", min=1, max=6, step=1, format=function(v) return string.format("%dヶ月", v) end},
+  categories = {
+    {
+      name = "基本設定",
+      items = {
+        {name="初期資金", key="INITIAL_MONEY", min=1000000, max=10000000, step=500000, format=formatMoney},
+        {name="ガチャコスト", key="GACHA_COST", min=50000, max=500000, step=10000, format=formatMoney},
+        {name="クリア月数", key="WIN_MONTHS", min=12, max=60, step=6, format=function(v) return string.format("%dヶ月", v) end},
+        {name="キャラ寿命", key="CHAR_LIFETIME", min=1, max=6, step=1, format=function(v) return string.format("%dヶ月", v) end},
+        {name="初期評価", key="INITIAL_REPUTATION", min=0, max=10, step=1, format=function(v) return string.format("%d", v) end},
+      }
+    },
+    {
+      name = "経済設定",
+      items = {
+        {name="基礎収益", key="BASE_REVENUE", min=100000, max=500000, step=10000, format=formatMoney},
+        {name="基礎維持費", key="BASE_MAINTENANCE", min=50000, max=500000, step=10000, format=formatMoney},
+      }
+    },
+    {
+      name = "炎上設定",
+      items = {
+        {name="炎上資金減少率", key="FIRE_PENALTY_MONEY", min=0.1, max=0.8, step=0.05, format=function(v) return string.format("%.0f%%", v*100) end},
+        {name="炎上評価減少", key="FIRE_PENALTY_REPUTATION", min=1, max=5, step=1, format=function(v) return string.format("%d", v) end},
+        {name="バランス係数", key="FIRE_BALANCE_FACTOR", min=0.001, max=0.01, step=0.001, format=function(v) return string.format("%.3f", v) end},
+        {name="評価係数", key="FIRE_REPUTATION_FACTOR", min=0.01, max=0.05, step=0.005, format=function(v) return string.format("%.3f", v) end},
+        {name="炎上確率上限", key="FIRE_MAX_PROBABILITY", min=0.5, max=1.0, step=0.05, format=function(v) return string.format("%.0f%%", v*100) end},
+      }
+    },
+    {
+      name = "バランス設定",
+      items = {
+        {name="バランス倍率", key="BALANCE_SCORE_MULTIPLIER", min=10, max=50, step=5, format=function(v) return string.format("%d", v) end},
+        {name="空枠ペナルティ", key="EMPTY_SLOT_PENALTY", min=5, max=30, step=5, format=function(v) return string.format("%d", v) end},
+      }
+    },
+    {
+      name = "レアリティ確率",
+      items = {
+        {name="N確率", key="GACHA_PROB_N", min=0.3, max=0.8, step=0.05, format=function(v) return string.format("%.0f%%", v*100) end},
+        {name="R確率", key="GACHA_PROB_R", min=0.1, max=0.4, step=0.05, format=function(v) return string.format("%.0f%%", v*100) end},
+        {name="SR確率", key="GACHA_PROB_SR", min=0.05, max=0.3, step=0.05, format=function(v) return string.format("%.0f%%", v*100) end},
+        {name="SSR確率", key="GACHA_PROB_SSR", min=0.01, max=0.2, step=0.01, format=function(v) return string.format("%.0f%%", v*100) end},
+      }
+    },
   },
+  currentCategory = 1,
   selected = 1
 }
 
@@ -320,6 +389,7 @@ local autoplayMenu = {
     {name="10回実行", runs=10},
     {name="100回実行", runs=100},
     {name="1000回実行", runs=1000},
+    {name="10万回実行", runs=100000},  
     {name="戻る", runs=0}
   },
   selected = 1
@@ -356,6 +426,9 @@ function rollGacha()
   local roll = math.random()  -- 0.0～1.0のランダム値
   local cumProb = 0           -- 累積確率
   local selectedRarity = "N"  -- デフォルトはN
+
+  -- ガチャテーブルを動的に構築
+  local gachaTable = buildGachaTable()
 
   -- 確率テーブルを順に見て、累積確率がrollを超えたらそのレアリティに決定
   for _, entry in ipairs(gachaTable) do
@@ -480,8 +553,8 @@ function calculateTeamBalance(currentTeam)
   variance = variance / 4  -- 分散
   local stdDev = math.sqrt(variance)  -- 標準偏差
 
-  -- バランススコアを計算（標準偏差を30倍して拡大）
-  local balanceScore = math.min(100, stdDev * 30)
+  -- バランススコアを計算（標準偏差を係数倍して拡大）
+  local balanceScore = math.min(100, stdDev * BALANCE_SCORE_MULTIPLIER)
 
   -- 空枠ペナルティを加算（空枠は不利）
   balanceScore = balanceScore + (emptySlots * EMPTY_SLOT_PENALTY)
@@ -638,17 +711,17 @@ end
   @return 炎上したかどうか（boolean）, 炎上確率（0.0-1.0）
 ]]
 function checkFire(balanceScore, reputation)
-  -- バランススコアによる基本炎上確率（0-50%）
-  local baseProb = balanceScore * 0.005  -- スコア100で50%
+  -- バランススコアによる基本炎上確率
+  local baseProb = balanceScore * FIRE_BALANCE_FACTOR
 
   -- 評価による修正（評価が低いほど炎上しやすい）
-  local reputationMod = (10 - reputation) * 0.02  -- 評価0で+20%、評価10で0%
+  local reputationMod = (10 - reputation) * FIRE_REPUTATION_FACTOR
 
   -- 合計確率
   local totalProb = baseProb + reputationMod
 
-  -- 確率を0-80%の範囲に収める（必ず炎上する状況は作らない）
-  totalProb = math.max(0, math.min(0.80, totalProb))
+  -- 確率を上限以下に収める
+  totalProb = math.max(0, math.min(FIRE_MAX_PROBABILITY, totalProb))
 
   -- 炎上判定（ランダム抽選）と確率を返す
   return math.random() < totalProb, totalProb
@@ -711,12 +784,88 @@ function processMonthEnd()
   return report
 end
 
+-- ============================================================
+-- 設定の保存・読み込み
+-- ============================================================
+
+--[[
+  設定をファイルに保存
+  
+  【保存先】
+  %APPDATA%/LOVE/helloworld/config.lua（Windows）
+  ~/.local/share/love/helloworld/config.lua（Linux）
+  
+  【保存形式】
+  Luaテーブル形式で保存（require()で読み込み可能）
+]]
+function saveSettings()
+  local content = "return {\n"
+  
+  -- 全カテゴリの全項目を保存
+  for _, category in ipairs(settingsMenu.categories) do
+    content = content .. string.format("  -- %s\n", category.name)
+    for _, item in ipairs(category.items) do
+      local value = _G[item.key]
+      if type(value) == "number" then
+        content = content .. string.format("  %s = %s,\n", item.key, value)
+      else
+        content = content .. string.format("  %s = \"%s\",\n", item.key, value)
+      end
+    end
+    content = content .. "\n"
+  end
+  
+  content = content .. "}\n"
+  
+  local success = love.filesystem.write("config.lua", content)
+  return success
+end
+
+--[[
+  設定をファイルから読み込み
+  
+  【読み込み処理】
+  1. config.luaが存在するか確認
+  2. ファイルを実行してテーブルを取得
+  3. 各パラメータをグローバル変数に設定
+  
+  【戻り値】
+  success: boolean -- 読み込み成功したか
+]]
+function loadSettings()
+  local info = love.filesystem.getInfo("config.lua")
+  if not info then
+    return false  -- ファイルが存在しない
+  end
+  
+  local chunk, err = love.filesystem.load("config.lua")
+  if not chunk then
+    print("設定ファイル読み込みエラー:", err)
+    return false
+  end
+  
+  local settings = chunk()
+  if type(settings) ~= "table" then
+    print("設定ファイルの形式が不正です")
+    return false
+  end
+  
+  -- 読み込んだ設定をグローバル変数に適用
+  for key, value in pairs(settings) do
+    if DEFAULT_VALUES[key] ~= nil then  -- 有効なキーのみ
+      _G[key] = value
+    end
+  end
+  
+  return true
+end
+
 -- ===== 初期化 =====
 function initState()
   state = {
     month = 1,
     money = INITIAL_MONEY,
-    reputation = 5,
+    reputation = INITIAL_REPUTATION,
     gachaThisMonth = 0
   }
   chars = {}
@@ -804,7 +953,8 @@ function runAutoplay()
     local gachaCount = math.random(0, 3)
     for _ = 1, gachaCount do
       if localState.money >= GACHA_COST then
-        -- ガチャ実行
+        -- ガチャ実行（動的にテーブル構築）
+        local gachaTable = buildGachaTable()
         local randVal = math.random()
         local cumProb = 0
         local rarity = "N"
@@ -1011,6 +1161,9 @@ function love.load()
   smallFont = love.graphics.newFont(FONT_PATH, 16)
   tinyFont  = love.graphics.newFont(FONT_PATH, 13)
 
+  -- 保存された設定を読み込み（存在する場合）
+  loadSettings()
+
   initState()
 end
 
@@ -1060,14 +1213,30 @@ function love.keypressed(key)
     end
 
   elseif gameState == "settings" then
+    local currentItems = settingsMenu.categories[settingsMenu.currentCategory].items
+    
     if key == "up" then
       settingsMenu.selected = settingsMenu.selected - 1
-      if settingsMenu.selected < 1 then settingsMenu.selected = #settingsMenu.items end
+      if settingsMenu.selected < 1 then settingsMenu.selected = #currentItems end
     elseif key == "down" then
       settingsMenu.selected = settingsMenu.selected + 1
-      if settingsMenu.selected > #settingsMenu.items then settingsMenu.selected = 1 end
+      if settingsMenu.selected > #currentItems then settingsMenu.selected = 1 end
+    elseif key == "tab" or key == "e" then
+      -- 次のカテゴリへ
+      settingsMenu.currentCategory = settingsMenu.currentCategory + 1
+      if settingsMenu.currentCategory > #settingsMenu.categories then
+        settingsMenu.currentCategory = 1
+      end
+      settingsMenu.selected = 1
+    elseif key == "q" then
+      -- 前のカテゴリへ
+      settingsMenu.currentCategory = settingsMenu.currentCategory - 1
+      if settingsMenu.currentCategory < 1 then
+        settingsMenu.currentCategory = #settingsMenu.categories
+      end
+      settingsMenu.selected = 1
     elseif key == "left" or key == "right" then
-      local item = settingsMenu.items[settingsMenu.selected]
+      local item = currentItems[settingsMenu.selected]
       local currentValue = _G[item.key]
       local delta = (key == "right") and item.step or -item.step
       local newValue = currentValue + delta
@@ -1075,9 +1244,25 @@ function love.keypressed(key)
       newValue = math.max(item.min, math.min(item.max, newValue))
       _G[item.key] = newValue
     elseif key == "r" then
-      -- デフォルトにリセット
-      for _, item in ipairs(settingsMenu.items) do
-        _G[item.key] = DEFAULT_VALUES[item.key]
+      -- 全設定をデフォルトにリセット
+      for key, value in pairs(DEFAULT_VALUES) do
+        _G[key] = value
+      end
+    elseif key == "s" then
+      -- 設定を保存
+      local success = saveSettings()
+      if success then
+        print("設定を保存しました: " .. love.filesystem.getSaveDirectory() .. "/config.lua")
+      else
+        print("設定の保存に失敗しました")
+      end
+    elseif key == "l" then
+      -- 設定を読み込み
+      local success = loadSettings()
+      if success then
+        print("設定を読み込みました")
+      else
+        print("設定の読み込みに失敗しました")
       end
     elseif key == "escape" then
       gameState = "title"
@@ -1610,21 +1795,40 @@ function drawSettingsScreen()
   -- タイトル
   love.graphics.setFont(titleFont)
   love.graphics.setColor(0.3, 0.8, 1)
-  boldPrintf("ゲーム設定", 0, 50, w, "center")
+  boldPrintf("ゲーム設定", 0, 30, w, "center")
 
-  -- 説明
+  -- カテゴリタブ
+  love.graphics.setFont(tinyFont)
+  local tabWidth = w / #settingsMenu.categories
+  for i, category in ipairs(settingsMenu.categories) do
+    local x = (i - 1) * tabWidth
+    local y = 70
+    if i == settingsMenu.currentCategory then
+      love.graphics.setColor(0.4, 0.6, 0.9)
+      love.graphics.rectangle("fill", x, y, tabWidth, 25)
+      love.graphics.setColor(1, 1, 1)
+    else
+      love.graphics.setColor(0.2, 0.3, 0.4)
+      love.graphics.rectangle("fill", x, y, tabWidth, 25)
+      love.graphics.setColor(0.6, 0.6, 0.7)
+    end
+    love.graphics.printf(category.name, x, y + 6, tabWidth, "center")
+  end
+
+  -- 操作説明
   love.graphics.setFont(tinyFont)
   love.graphics.setColor(0.6, 0.6, 0.7)
-  boldPrintf("←→: 値を変更  R: デフォルトに戻す  Esc: タイトルに戻る", 0, 100, w, "center")
+  boldPrintf("Tab/Q/E: カテゴリ切替  ↑↓: 項目  ←→: 値変更  R: デフォルト  S: 保存  L: 読込  Esc: 戻る", 0, 100, w, "center")
 
-  -- 設定項目
+  -- 現在のカテゴリの設定項目
+  local currentItems = settingsMenu.categories[settingsMenu.currentCategory].items
   love.graphics.setFont(smallFont)
-  local startY = 150
-  local lineHeight = 45
+  local startY = 130
+  local lineHeight = 35
 
-  for i, item in ipairs(settingsMenu.items) do
+  for i, item in ipairs(currentItems) do
     local y = startY + (i - 1) * lineHeight
-    local value = _G[item.key]  -- グローバル変数から値を取得
+    local value = _G[item.key]
 
     -- 項目名
     if i == settingsMenu.selected then
@@ -1649,9 +1853,9 @@ function drawSettingsScreen()
   -- デフォルト値表示
   love.graphics.setFont(tinyFont)
   love.graphics.setColor(0.5, 0.5, 0.6)
-  local currentItem = settingsMenu.items[settingsMenu.selected]
+  local currentItem = currentItems[settingsMenu.selected]
   local defaultValue = DEFAULT_VALUES[currentItem.key]
-  boldPrintf(string.format("(デフォルト: %s)", currentItem.format(defaultValue)), 0, h - 80, w, "center")
+  boldPrintf(string.format("(デフォルト: %s)", currentItem.format(defaultValue)), 0, h - 60, w, "center")
 end
 
 -- ============================================================
