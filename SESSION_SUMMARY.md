@@ -198,3 +198,220 @@ E:\work\helloworld\
 
 **セッション状態**: Phase 1, 3, 4完了。Phase 2（UI改善）は保留。
 **次回アクション**: バランステスト結果の確認と検証。
+
+---
+
+# セッション記録: 設定画面・オートプレイ・ドキュメント実装
+
+**日時**: 2026-02-11
+**前提**: オートプレイ削除済みの状態からスタート
+
+---
+
+## 完了した実装
+
+### タスク1: ゲーム設定画面 ✅
+- タイトルメニューに「ゲーム設定」追加
+- 8つのパラメータを調整可能:
+  - 初期資金（100万～1000万円）
+  - ガチャコスト（5万～50万円）
+  - 基礎維持費（5万～50万円）
+  - 基礎収益（10万～50万円）
+  - 炎上資金減少率（10%～80%）
+  - 炎上評価減少（1～5）
+  - クリア月数（12～60ヶ月）
+  - キャラ寿命（1～6ヶ月）
+- デフォルト値リセット機能（Rキー）
+- 操作: ↑↓で項目選択、←→で値変更
+
+### タスク2: オートプレイモード ✅
+- タイトルメニューに「オートプレイ」追加
+- 実行回数選択（10/100/1000回）
+- ランダムAI実装:
+  - 毎月0-3回ガチャをランダム実行
+  - ランダム編成（Fisher-Yatesシャッフル）
+  - 収益ブレ±20%
+- 結果画面:
+  - 生存率表示（色分け）
+  - 最終到達月の分布（棒グラフ）
+  - 最終資金の分布（棒グラフ、100万円単位10区間）
+  - 統計情報（平均/最大/最小資金）
+
+### タスク3: 実装解説MDファイル ✅
+- `docs/IMPLEMENTATION.md`を作成
+- 内容:
+  - プロジェクト概要とアーキテクチャ
+  - 各システムの詳細説明
+  - 主要関数リファレンス
+  - ゲームバランス設計思想
+  - 拡張性とカスタマイズ方法
+  - 今後の拡張案
+
+### タスク4: 所持キャラUIスクロール機能 ✅
+- 編成画面の所持キャラリスト:
+  - 最大15行表示
+  - 選択中のキャラを中央付近に表示
+  - スクロール表示「(現在/総数) ↑↓でスクロール」
+- ガチャ画面の今月の獲得リスト:
+  - 最大20行表示
+  - 最新のガチャ結果を優先表示
+  - 「(X回ガチャ済)」表示
+
+---
+
+## 技術的な実装詳細
+
+### グローバル変数化
+```lua
+-- local → グローバル（設定可能にするため）
+WIN_MONTHS = 36
+INITIAL_MONEY = 3000000
+GACHA_COST = 100000
+CHAR_LIFETIME = 3
+BASE_REVENUE = 200000
+BASE_MAINTENANCE = 150000
+FIRE_PENALTY_MONEY = 0.40
+FIRE_PENALTY_REPUTATION = 2
+
+-- デフォルト値保存
+DEFAULT_VALUES = {...}
+```
+
+### 設定画面の実装
+```lua
+settingsMenu = {
+  items = {
+    {name, key, min, max, step, format},
+    ...
+  },
+  selected = 1
+}
+
+-- グローバル変数アクセス
+_G[item.key] = newValue  -- 動的に設定
+local value = _G[item.key]  -- 動的に取得
+```
+
+### オートプレイAI
+```lua
+function runAutoplay()
+  -- ランダムガチャ（0-3回）
+  local gachaCount = math.random(0, 3)
+
+  -- Fisher-Yatesシャッフル
+  for i = #shuffled, 2, -1 do
+    local j = math.random(1, i)
+    shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+  end
+
+  -- 収益計算（±20%ブレ）
+  local revenue = calculateRevenue(localTeam, 0.20)
+
+  return {survived, finalMonth, finalMoney}
+end
+```
+
+### 棒グラフ描画
+```lua
+-- 最大値で正規化
+local maxCount = 0
+for _, count in pairs(distribution) do
+  maxCount = math.max(maxCount, count)
+end
+
+-- 棒グラフ描画
+local barHeight = (count / maxCount) * graphHeight
+love.graphics.rectangle("fill", x, y, barWidth, barHeight)
+```
+
+### スクロール実装
+```lua
+-- 選択中心スクロール
+local scrollStart = math.max(1, selectedIndex - math.floor(maxVisible / 2))
+scrollStart = math.min(scrollStart, total - maxVisible + 1)
+local scrollEnd = math.min(scrollStart + maxVisible - 1, total)
+
+-- 表示範囲のみ描画
+for i = scrollStart, scrollEnd do
+  -- 描画処理
+end
+```
+
+---
+
+## ファイル構造変化
+
+```
+main.lua: 1058行 → 1450行（+400行）
+
+追加セクション:
+- DEFAULT_VALUES定義
+- settingsMenu定義
+- autoplayMenu定義
+- runAutoplay()関数（約100行）
+- executeAutoplay()関数（約50行）
+- drawSettingsScreen()（約60行）
+- drawAutoplayMenuScreen()（約40行）
+- drawAutoplayResultsScreen()（約100行）
+- スクロール処理（編成画面・ガチャ画面）
+
+新規ファイル:
+- docs/IMPLEMENTATION.md（実装解説）
+```
+
+---
+
+## 学習事項
+
+### Love2D
+- レターボックススケーリング（アスペクト比保持）
+- 棒グラフ描画（love.graphics.rectangle）
+- 色分け表示で視覚的情報を強化
+
+### Lua
+- `_G[key]`でグローバル変数に動的アクセス
+- `math.max/min`で範囲チェック
+- Fisher-Yatesシャッフルアルゴリズム
+
+### UI設計
+- スクロール位置は選択インデックスから自動計算
+- 中央付近に表示で上下に余裕を持たせる
+- 最大値で正規化して棒グラフ描画
+
+---
+
+## ゲームバランス
+
+### オートプレイ生存率の目安
+- 20-30%: ランダムAIの平均的な生存率
+- 30-40%: 設定が易しめ
+- 10-20%: 設定が難しすぎる
+
+### 設定調整のコツ
+- 生存率↑: 維持費↓ または 収益↑
+- 生存率↓: 維持費↑ または 収益↓
+- 炎上厳しく: 炎上ペナルティ↑
+
+---
+
+## 今後の拡張案
+
+### 高優先度
+1. 設定保存機能（config.lua）
+2. 複数AI実装（SAFE/NORMAL/GAMBLE）
+3. CSV出力（オートプレイ結果）
+
+### 中優先度
+4. グラフ強化（時系列グラフ）
+5. チュートリアル
+6. セーブ/ロード機能
+
+---
+
+**セッション統計**:
+- タスク完了: 4/4（100%）
+- 実装時間: 約1.5時間
+- コード行数増加: +400行
+- 新規ファイル: 1件
+
+**次回アクション**: 設定保存機能の実装、または複数AI戦略の実装

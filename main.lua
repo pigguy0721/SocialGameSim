@@ -27,11 +27,12 @@
 local FONT_PATH = "fonts/NotoSansJP-Regular.ttf"  -- 日本語フォントのパス
 
 -- 【ゲームバランス - 基本パラメータ】
-local WIN_MONTHS = 36           -- クリア条件：36ヶ月生存
-local INITIAL_MONEY = 3000000   -- 初期資金：300万円
-local GACHA_COST = 100000       -- ガチャ1回のコスト：10万円
-local TEAM_SIZE = 5             -- 編成枠数：5枠
-local CHAR_LIFETIME = 3         -- キャラクターの寿命：3ヶ月
+-- 設定可能なパラメータ（グローバル変数として定義）
+WIN_MONTHS = 36           -- クリア条件：36ヶ月生存
+INITIAL_MONEY = 3000000   -- 初期資金：300万円
+GACHA_COST = 100000       -- ガチャ1回のコスト：10万円
+local TEAM_SIZE = 5       -- 編成枠数：5枠（固定）
+CHAR_LIFETIME = 3         -- キャラクターの寿命：3ヶ月
 
 -- ===== デバッグモード =====
 local DEBUG_MODE = false  -- true にすると追加情報を表示
@@ -137,11 +138,24 @@ local charNames = {
   - NORMAL戦略で生存率35%が基準
   - SAFEは45%、GAMBLEは25%を目標とする
 ]]
-local BASE_REVENUE = 200000           -- 基礎収益：20万円/月
-local BASE_MAINTENANCE = 150000       -- 維持費：15万円/月（自動調整される）
-local FIRE_PENALTY_MONEY = 0.40       -- 炎上時の資金減少率：40%
-local FIRE_PENALTY_REPUTATION = 2     -- 炎上時の評価減少：-2
-local EMPTY_SLOT_PENALTY = 15         -- 空枠1つあたりのバランススコアペナルティ：+15
+-- 設定可能なゲームバランスパラメータ
+BASE_REVENUE = 200000           -- 基礎収益：20万円/月
+BASE_MAINTENANCE = 150000       -- 維持費：15万円/月
+FIRE_PENALTY_MONEY = 0.40       -- 炎上時の資金減少率：40%
+FIRE_PENALTY_REPUTATION = 2     -- 炎上時の評価減少：-2
+local EMPTY_SLOT_PENALTY = 15   -- 空枠1つあたりのバランススコアペナルティ：+15（固定）
+
+-- デフォルト値保存用
+local DEFAULT_VALUES = {
+  WIN_MONTHS = 36,
+  INITIAL_MONEY = 3000000,
+  GACHA_COST = 100000,
+  CHAR_LIFETIME = 3,
+  BASE_REVENUE = 200000,
+  BASE_MAINTENANCE = 150000,
+  FIRE_PENALTY_MONEY = 0.40,
+  FIRE_PENALTY_REPUTATION = 2
+}
 
 -- ============================================================
 -- 描画ヘルパー関数
@@ -239,7 +253,7 @@ local subState = "select"    -- 現在のサブ画面状態
 
 -- タイトルメニュー
 local menu = {
-  items = { "手動プレイ", "終了" },
+  items = { "手動プレイ", "オートプレイ", "ゲーム設定", "終了" },
   selected = 1  -- 選択中のメニュー項目（1始まり）
 }
 
@@ -251,6 +265,33 @@ local selectedCharIndex = nil    -- 編成画面で選択中のキャラIndex
 local selectedSlotIndex = nil    -- 編成画面で選択中のスロットIndex
 local gachaResults = {}     -- 今月引いたガチャ結果の履歴
 local monthReport = {}      -- 月末処理の結果レポート
+
+-- ゲーム設定画面
+local settingsMenu = {
+  items = {
+    {name="初期資金", key="INITIAL_MONEY", min=1000000, max=10000000, step=500000, format=formatMoney},
+    {name="ガチャコスト", key="GACHA_COST", min=50000, max=500000, step=10000, format=formatMoney},
+    {name="基礎維持費", key="BASE_MAINTENANCE", min=50000, max=500000, step=10000, format=formatMoney},
+    {name="基礎収益", key="BASE_REVENUE", min=100000, max=500000, step=10000, format=formatMoney},
+    {name="炎上資金減少率", key="FIRE_PENALTY_MONEY", min=0.1, max=0.8, step=0.05, format=function(v) return string.format("%.0f%%", v*100) end},
+    {name="炎上評価減少", key="FIRE_PENALTY_REPUTATION", min=1, max=5, step=1, format=function(v) return string.format("%d", v) end},
+    {name="クリア月数", key="WIN_MONTHS", min=12, max=60, step=6, format=function(v) return string.format("%dヶ月", v) end},
+    {name="キャラ寿命", key="CHAR_LIFETIME", min=1, max=6, step=1, format=function(v) return string.format("%dヶ月", v) end},
+  },
+  selected = 1
+}
+
+-- オートプレイ設定
+local autoplayMenu = {
+  items = {
+    {name="10回実行", runs=10},
+    {name="100回実行", runs=100},
+    {name="1000回実行", runs=1000},
+    {name="戻る", runs=0}
+  },
+  selected = 1
+}
+local autoplayResults = nil  -- オートプレイ結果
 
 -- ===== フォント変数 =====
 -- 5種類のフォントサイズを使用（後でlove.load()で初期化）
@@ -592,6 +633,146 @@ function checkWin()
   return state.month > WIN_MONTHS
 end
 
+-- ===== オートプレイシステム =====
+-- ランダムAIで1回のゲームを実行
+function runAutoplay()
+  local localState = {
+    month = 1,
+    money = INITIAL_MONEY,
+    reputation = 5,
+    gachaThisMonth = 0
+  }
+  local localChars = {}
+  local localTeam = {}
+  local nextId = 1
+
+  while localState.month <= WIN_MONTHS and localState.money > 0 do
+    -- 月初処理
+    localState.gachaThisMonth = 0
+    
+    -- ランダムにガチャを引く（0-3回）
+    local gachaCount = math.random(0, 3)
+    for _ = 1, gachaCount do
+      if localState.money >= GACHA_COST then
+        -- ガチャ実行
+        local randVal = math.random()
+        local cumProb = 0
+        local rarity = "N"
+        for _, entry in ipairs(gachaTable) do
+          cumProb = cumProb + entry.prob
+          if randVal <= cumProb then
+            rarity = entry.rarity
+            break
+          end
+        end
+        local effectType = effectTypes[math.random(1, #effectTypes)]
+        local char = {
+          id = nextId,
+          name = charNames[math.random(1, #charNames)] .. " #" .. nextId,
+          rarity = rarity,
+          effectType = effectType,
+          effectValue = rarityEffects[rarity][effectType],
+          lifetime = CHAR_LIFETIME
+        }
+        nextId = nextId + 1
+        table.insert(localChars, char)
+        localState.money = localState.money - GACHA_COST
+        localState.gachaThisMonth = localState.gachaThisMonth + 1
+      end
+    end
+
+    -- ランダムに編成を組む
+    localTeam = {}
+    local shuffled = {}
+    for _, char in ipairs(localChars) do
+      table.insert(shuffled, char)
+    end
+    -- シャッフル
+    for i = #shuffled, 2, -1 do
+      local j = math.random(1, i)
+      shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+    end
+    -- 最大5枚選択
+    for i = 1, math.min(TEAM_SIZE, #shuffled) do
+      localTeam[i] = shuffled[i]
+    end
+
+    -- 月末処理
+    local balanceScore = calculateTeamBalance(localTeam)
+    local revenue = calculateRevenue(localTeam, 0.20)  -- ±20%のブレ
+    localState.money = localState.money + revenue
+
+    -- 炎上判定
+    local fired, fireProb = checkFire(balanceScore, localState.reputation)
+    if fired then
+      localState.money = math.floor(localState.money * (1 - FIRE_PENALTY_MONEY))
+      localState.reputation = math.max(0, localState.reputation - FIRE_PENALTY_REPUTATION)
+    end
+
+    -- 維持費
+    localState.money = localState.money - BASE_MAINTENANCE
+
+    -- キャラ寿命減少
+    for i = #localChars, 1, -1 do
+      localChars[i].lifetime = localChars[i].lifetime - 1
+      if localChars[i].lifetime <= 0 then
+        table.remove(localChars, i)
+      end
+    end
+
+    localState.month = localState.month + 1
+  end
+
+  -- 結果を返す
+  return {
+    survived = localState.money > 0 and localState.month > WIN_MONTHS,
+    finalMonth = math.min(localState.month - 1, WIN_MONTHS),
+    finalMoney = localState.money
+  }
+end
+
+-- オートプレイを複数回実行して統計を取る
+function executeAutoplay(runCount)
+  local results = {
+    totalRuns = runCount,
+    survived = 0,
+    monthDistribution = {},  -- {month: count}
+    moneyDistribution = {},  -- {bucket: count}
+    maxMoney = -999999999,
+    minMoney = 999999999,
+    totalMoney = 0,
+    survivalRate = 0
+  }
+
+  -- 初期化
+  for m = 1, WIN_MONTHS do
+    results.monthDistribution[m] = 0
+  end
+
+  for _ = 1, runCount do
+    local result = runAutoplay()
+    
+    if result.survived then
+      results.survived = results.survived + 1
+    end
+
+    results.monthDistribution[result.finalMonth] = (results.monthDistribution[result.finalMonth] or 0) + 1
+    results.totalMoney = results.totalMoney + result.finalMoney
+    results.maxMoney = math.max(results.maxMoney, result.finalMoney)
+    results.minMoney = math.min(results.minMoney, result.finalMoney)
+
+    -- 資金分布（10区間）
+    local bucket = math.floor(result.finalMoney / 1000000) + 1  -- 100万円単位
+    bucket = math.max(1, math.min(10, bucket))
+    results.moneyDistribution[bucket] = (results.moneyDistribution[bucket] or 0) + 1
+  end
+
+  results.survivalRate = results.survived / runCount
+  results.avgMoney = results.totalMoney / runCount
+
+  return results
+end
+
 -- ===== Love2D コールバック =====
 function love.load()
   love.window.setTitle("ガチャ編成型 経営シミュレーション")
@@ -641,7 +822,71 @@ function love.keypressed(key)
         gameState = "game"
         subState = "gacha"
       elseif menu.selected == 2 then
+        -- オートプレイ
+        gameState = "autoplay"
+        subState = "menu"
+        autoplayMenu.selected = 1
+      elseif menu.selected == 3 then
+        -- ゲーム設定
+        gameState = "settings"
+        settingsMenu.selected = 1
+      elseif menu.selected == 4 then
+        -- 終了
         love.event.quit()
+      end
+    end
+
+  elseif gameState == "settings" then
+    if key == "up" then
+      settingsMenu.selected = settingsMenu.selected - 1
+      if settingsMenu.selected < 1 then settingsMenu.selected = #settingsMenu.items end
+    elseif key == "down" then
+      settingsMenu.selected = settingsMenu.selected + 1
+      if settingsMenu.selected > #settingsMenu.items then settingsMenu.selected = 1 end
+    elseif key == "left" or key == "right" then
+      local item = settingsMenu.items[settingsMenu.selected]
+      local currentValue = _G[item.key]
+      local delta = (key == "right") and item.step or -item.step
+      local newValue = currentValue + delta
+      -- 範囲チェック
+      newValue = math.max(item.min, math.min(item.max, newValue))
+      _G[item.key] = newValue
+    elseif key == "r" then
+      -- デフォルトにリセット
+      for _, item in ipairs(settingsMenu.items) do
+        _G[item.key] = DEFAULT_VALUES[item.key]
+      end
+    elseif key == "escape" then
+      gameState = "title"
+      menu.selected = 1
+    end
+
+  elseif gameState == "autoplay" then
+    if subState == "menu" then
+      if key == "up" then
+        autoplayMenu.selected = autoplayMenu.selected - 1
+        if autoplayMenu.selected < 1 then autoplayMenu.selected = #autoplayMenu.items end
+      elseif key == "down" then
+        autoplayMenu.selected = autoplayMenu.selected + 1
+        if autoplayMenu.selected > #autoplayMenu.items then autoplayMenu.selected = 1 end
+      elseif key == "return" or key == "space" then
+        local item = autoplayMenu.items[autoplayMenu.selected]
+        if item.runs > 0 then
+          -- オートプレイ実行
+          autoplayResults = executeAutoplay(item.runs)
+          subState = "results"
+        else
+          -- 戻る
+          gameState = "title"
+          menu.selected = 1
+        end
+      elseif key == "escape" then
+        gameState = "title"
+        menu.selected = 1
+      end
+    elseif subState == "results" then
+      if key == "return" or key == "space" or key == "escape" then
+        subState = "menu"
       end
     end
 
@@ -741,6 +986,14 @@ function love.draw()
 
   if gameState == "title" then
     drawTitleScreen()
+  elseif gameState == "settings" then
+    drawSettingsScreen()
+  elseif gameState == "autoplay" then
+    if subState == "menu" then
+      drawAutoplayMenuScreen()
+    elseif subState == "results" then
+      drawAutoplayResultsScreen()
+    end
   elseif gameState == "game" then
     if subState == "gacha" then
       drawGachaScreen()
@@ -854,11 +1107,22 @@ function drawGachaScreen()
 
     love.graphics.setFont(tinyFont)
     local ry = 80
-    for i = math.max(1, #gachaResults - 10), #gachaResults do
+    local maxVisible = 20  -- 最大表示行数
+    local totalResults = #gachaResults
+    
+    -- 最新のものを優先表示（古いものから削る）
+    local startIndex = math.max(1, totalResults - maxVisible + 1)
+    for i = startIndex, totalResults do
       local char = gachaResults[i]
       love.graphics.setColor(rarityColors[char.rarity])
       boldPrint(string.format("[%s] %s - %s", char.rarity, char.name, effectTypeNames[char.effectType]), 300, ry)
       ry = ry + 18
+    end
+    
+    -- スクロール表示
+    if totalResults > maxVisible then
+      love.graphics.setColor(0.5, 0.5, 0.6)
+      boldPrint(string.format("(%d回ガチャ済)", totalResults), 300, ry + 5)
     end
   end
 
@@ -931,7 +1195,21 @@ function drawFormationScreen()
 
   love.graphics.setFont(tinyFont)
   local cy = 250
-  for i, char in ipairs(chars) do
+  local maxVisibleChars = 15  -- 最大表示行数
+  local totalChars = #chars
+
+  -- スクロール範囲計算（選択中のキャラが必ず表示されるように）
+  local scrollStart = 1
+  if totalChars > maxVisibleChars then
+    -- 選択中のキャラを中央付近に表示
+    scrollStart = math.max(1, selectedCharIndex - math.floor(maxVisibleChars / 2))
+    scrollStart = math.min(scrollStart, totalChars - maxVisibleChars + 1)
+  end
+  local scrollEnd = math.min(scrollStart + maxVisibleChars - 1, totalChars)
+
+  -- 表示範囲内のキャラのみ描画
+  for i = scrollStart, scrollEnd do
+    local char = chars[i]
     local isSelected = (i == selectedCharIndex)
     if isSelected then
       love.graphics.setColor(1, 1, 0, 0.3)
@@ -942,6 +1220,12 @@ function drawFormationScreen()
     boldPrint(string.format("[%s] %s - %s (残%dヶ月)",
       char.rarity, char.name, effectTypeNames[char.effectType], char.lifetime), 20, cy)
     cy = cy + 20
+  end
+
+  -- スクロール可能な場合は表示
+  if totalChars > maxVisibleChars then
+    love.graphics.setColor(0.5, 0.5, 0.6)
+    boldPrint(string.format("(%d/%d) ↑↓でスクロール", selectedCharIndex, totalChars), 20, cy + 5)
   end
 
   -- 炎上確率表示
@@ -1032,6 +1316,202 @@ function drawGameOverScreen()
 
   love.graphics.setColor(0.4, 0.4, 0.4)
   boldPrintf("[Enterでタイトルに戻る]", 0, h - 40, w, "center")
+end
+
+-- ===== 描画: ゲーム設定 =====
+function drawSettingsScreen()
+  local w, h = BASE_W, BASE_H
+  love.graphics.clear(0.08, 0.08, 0.15)
+
+  -- タイトル
+  love.graphics.setFont(titleFont)
+  love.graphics.setColor(0.3, 0.8, 1)
+  boldPrintf("ゲーム設定", 0, 50, w, "center")
+
+  -- 説明
+  love.graphics.setFont(tinyFont)
+  love.graphics.setColor(0.6, 0.6, 0.7)
+  boldPrintf("←→: 値を変更  R: デフォルトに戻す  Esc: タイトルに戻る", 0, 100, w, "center")
+
+  -- 設定項目
+  love.graphics.setFont(smallFont)
+  local startY = 150
+  local lineHeight = 45
+
+  for i, item in ipairs(settingsMenu.items) do
+    local y = startY + (i - 1) * lineHeight
+    local value = _G[item.key]  -- グローバル変数から値を取得
+
+    -- 項目名
+    if i == settingsMenu.selected then
+      love.graphics.setColor(1, 1, 0)
+      boldPrint("> " .. item.name, 150, y)
+    else
+      love.graphics.setColor(0.8, 0.8, 0.8)
+      boldPrint(item.name, 170, y)
+    end
+
+    -- 現在の値
+    love.graphics.setFont(menuFont)
+    if i == settingsMenu.selected then
+      love.graphics.setColor(1, 0.9, 0.3)
+      boldPrint(item.format(value), 450, y - 2)
+    else
+      love.graphics.setColor(0.6, 0.6, 0.7)
+      boldPrint(item.format(value), 450, y - 2)
+    end
+  end
+
+  -- デフォルト値表示
+  love.graphics.setFont(tinyFont)
+  love.graphics.setColor(0.5, 0.5, 0.6)
+  local currentItem = settingsMenu.items[settingsMenu.selected]
+  local defaultValue = DEFAULT_VALUES[currentItem.key]
+  boldPrintf(string.format("(デフォルト: %s)", currentItem.format(defaultValue)), 0, h - 80, w, "center")
+end
+
+-- ===== 描画: オートプレイメニュー =====
+function drawAutoplayMenuScreen()
+  local w, h = BASE_W, BASE_H
+  love.graphics.clear(0.08, 0.08, 0.15)
+
+  -- タイトル
+  love.graphics.setFont(titleFont)
+  love.graphics.setColor(1, 0.6, 0.3)
+  boldPrintf("オートプレイ", 0, 50, w, "center")
+
+  -- 説明
+  love.graphics.setFont(tinyFont)
+  love.graphics.setColor(0.6, 0.6, 0.7)
+  boldPrintf("ランダムAIが自動でプレイし、結果を統計表示します", 0, 100, w, "center")
+  boldPrintf(string.format("(毎月0-3回ガチャ、ランダム編成、収益ブレ±20%%)", WIN_MONTHS), 0, 120, w, "center")
+
+  -- メニュー項目
+  love.graphics.setFont(menuFont)
+  local startY = 200
+  for i, item in ipairs(autoplayMenu.items) do
+    local y = startY + (i - 1) * 50
+    if i == autoplayMenu.selected then
+      love.graphics.setColor(1, 1, 0)
+      boldPrintf("> " .. item.name .. " <", 0, y, w, "center")
+    else
+      love.graphics.setColor(0.7, 0.7, 0.7)
+      boldPrintf(item.name, 0, y, w, "center")
+    end
+  end
+
+  love.graphics.setFont(tinyFont)
+  love.graphics.setColor(0.4, 0.4, 0.4)
+  boldPrintf("↑↓: 選択  Enter: 実行  Esc: タイトル", 0, h - 30, w, "center")
+end
+
+-- ===== 描画: オートプレイ結果 =====
+function drawAutoplayResultsScreen()
+  local w, h = BASE_W, BASE_H
+  love.graphics.clear(0.06, 0.06, 0.12)
+
+  -- タイトル
+  love.graphics.setFont(titleFont)
+  love.graphics.setColor(1, 0.85, 0.3)
+  boldPrintf("オートプレイ結果", 0, 30, w, "center")
+
+  love.graphics.setFont(tinyFont)
+  love.graphics.setColor(0.6, 0.6, 0.7)
+  boldPrintf(string.format("%d回実行", autoplayResults.totalRuns), 0, 65, w, "center")
+
+  -- 生存率（大きく表示）
+  love.graphics.setFont(menuFont)
+  local survColor = autoplayResults.survivalRate >= 0.5 and {0.3, 1, 0.5} or
+                    autoplayResults.survivalRate >= 0.3 and {1, 0.9, 0.3} or {1, 0.3, 0.3}
+  love.graphics.setColor(survColor)
+  boldPrintf(string.format("生存率: %.1f%%", autoplayResults.survivalRate * 100), 0, 95, w, "center")
+
+  -- 統計情報
+  love.graphics.setFont(smallFont)
+  love.graphics.setColor(0.8, 0.8, 0.9)
+  local infoY = 135
+  boldPrintf(string.format("平均資金: %s", formatMoney(autoplayResults.avgMoney)), 0, infoY, w, "center")
+  infoY = infoY + 20
+  boldPrintf(string.format("最大資金: %s", formatMoney(autoplayResults.maxMoney)), 0, infoY, w, "center")
+  infoY = infoY + 20
+  boldPrintf(string.format("最小資金: %s", formatMoney(autoplayResults.minMoney)), 0, infoY, w, "center")
+
+  -- 最終到達月分布グラフ
+  love.graphics.setFont(tinyFont)
+  love.graphics.setColor(1, 1, 1)
+  boldPrint("【最終到達月の分布】", 50, 220)
+
+  local graphX = 50
+  local graphY = 245
+  local graphWidth = 700
+  local graphHeight = 100
+
+  -- 最大値を求める
+  local maxCount = 0
+  for _, count in pairs(autoplayResults.monthDistribution) do
+    maxCount = math.max(maxCount, count)
+  end
+
+  -- 棒グラフ描画
+  if maxCount > 0 then
+    local barWidth = graphWidth / WIN_MONTHS
+    for month = 1, WIN_MONTHS do
+      local count = autoplayResults.monthDistribution[month] or 0
+      local barHeight = (count / maxCount) * graphHeight
+      local x = graphX + (month - 1) * barWidth
+      local y = graphY + graphHeight - barHeight
+
+      -- 色は月数に応じて変化（早期＝赤、後期＝緑）
+      local ratio = month / WIN_MONTHS
+      love.graphics.setColor(1 - ratio * 0.7, ratio * 0.7 + 0.3, 0.4)
+      love.graphics.rectangle("fill", x, y, barWidth - 1, barHeight)
+
+      -- ラベル（6ヶ月ごと）
+      if month % 6 == 0 then
+        love.graphics.setColor(0.6, 0.6, 0.6)
+        love.graphics.setFont(tinyFont)
+        love.graphics.print(string.format("%d", month), x - 5, graphY + graphHeight + 5)
+      end
+    end
+  end
+
+  -- 最終資金分布グラフ
+  love.graphics.setColor(1, 1, 1)
+  love.graphics.setFont(tinyFont)
+  boldPrint("【最終資金の分布】", 50, 370)
+
+  local graph2Y = 395
+  local graph2Height = 100
+
+  -- 最大値を求める
+  local maxMoneyCount = 0
+  for _, count in pairs(autoplayResults.moneyDistribution) do
+    maxMoneyCount = math.max(maxMoneyCount, count)
+  end
+
+  -- 棒グラフ描画
+  if maxMoneyCount > 0 then
+    local barWidth = graphWidth / 10
+    for bucket = 1, 10 do
+      local count = autoplayResults.moneyDistribution[bucket] or 0
+      local barHeight = (count / maxMoneyCount) * graph2Height
+      local x = graphX + (bucket - 1) * barWidth
+      local y = graph2Y + graph2Height - barHeight
+
+      love.graphics.setColor(0.3, 0.6, 1)
+      love.graphics.rectangle("fill", x, y, barWidth - 2, barHeight)
+
+      -- ラベル
+      love.graphics.setColor(0.6, 0.6, 0.6)
+      love.graphics.setFont(tinyFont)
+      local label = string.format("%dM", (bucket - 1))
+      love.graphics.print(label, x + 2, graph2Y + graph2Height + 5)
+    end
+  end
+
+  love.graphics.setFont(tinyFont)
+  love.graphics.setColor(0.4, 0.4, 0.4)
+  boldPrintf("[Enter: 戻る]", 0, h - 30, w, "center")
 end
 
 -- ===== 描画: クリア =====
