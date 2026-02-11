@@ -380,7 +380,8 @@ local settingsMenu = {
     },
   },
   currentCategory = 1,
-  selected = 1
+  selected = 1,
+  testResults = nil  -- バランステスト結果（1000回オートプレイ）
 }
 
 -- オートプレイ設定
@@ -644,7 +645,7 @@ function calculateRevenue(currentTeam, varianceAmount)
   local minVariance = 1.0 - varianceAmount  -- 下限倍率（例: 0.8 = -20%）
   local maxVariance = 1.0 + varianceAmount  -- 上限倍率（例: 1.2 = +20%）
   local variance = minVariance + math.random() * (maxVariance - minVariance)
-  totalRevenue = totalRevenue * variance
+  -- totalRevenue = totalRevenue * variance -- ランダムブレを無効化
 
   -- 整数値に丸めて返す
   return math.floor(totalRevenue)
@@ -1264,6 +1265,11 @@ function love.keypressed(key)
       else
         print("設定の読み込みに失敗しました")
       end
+    elseif key == "t" then
+      -- バランステスト実行（1000回オートプレイ）
+      print("バランステスト実行中... (1000回)")
+      settingsMenu.testResults = executeAutoplay(1000)
+      print("バランステスト完了")
     elseif key == "escape" then
       gameState = "title"
       menu.selected = 1
@@ -1501,6 +1507,7 @@ function drawGachaScreen()
   -- ガチャ確率表示
   love.graphics.setFont(tinyFont)
   local gy = 145
+  local gachaTable = buildGachaTable()  -- 動的にガチャテーブル構築
   for _, entry in ipairs(gachaTable) do
     love.graphics.setColor(rarityColors[entry.rarity])
     boldPrint(string.format("%s: %.0f%%", entry.rarity, entry.prob * 100), 20, gy)
@@ -1818,7 +1825,7 @@ function drawSettingsScreen()
   -- 操作説明
   love.graphics.setFont(tinyFont)
   love.graphics.setColor(0.6, 0.6, 0.7)
-  boldPrintf("Tab/Q/E: カテゴリ切替  ↑↓: 項目  ←→: 値変更  R: デフォルト  S: 保存  L: 読込  Esc: 戻る", 0, 100, w, "center")
+  boldPrintf("Tab/Q/E: カテゴリ切替  ↑↓: 項目  ←→: 値変更  R: デフォルト  S: 保存  L: 読込  T: テスト  Esc: 戻る", 0, 100, w, "center")
 
   -- 現在のカテゴリの設定項目
   local currentItems = settingsMenu.categories[settingsMenu.currentCategory].items
@@ -1855,7 +1862,121 @@ function drawSettingsScreen()
   love.graphics.setColor(0.5, 0.5, 0.6)
   local currentItem = currentItems[settingsMenu.selected]
   local defaultValue = DEFAULT_VALUES[currentItem.key]
-  boldPrintf(string.format("(デフォルト: %s)", currentItem.format(defaultValue)), 0, h - 60, w, "center")
+  boldPrintf(string.format("(デフォルト: %s)", currentItem.format(defaultValue)), 0, h - 180, w, "center")
+
+  -- バランステスト結果表示
+  if settingsMenu.testResults then
+    local results = settingsMenu.testResults
+    local survivalRate = results.survivalRate * 100
+
+    -- 区切り線
+    love.graphics.setColor(0.3, 0.3, 0.4)
+    love.graphics.line(100, h - 155, w - 100, h - 155)
+
+    -- 生存率表示
+    love.graphics.setFont(tinyFont)
+    if survivalRate >= 40 then
+      love.graphics.setColor(0.3, 1, 0.5)
+    elseif survivalRate >= 20 then
+      love.graphics.setColor(1, 1, 0.3)
+    else
+      love.graphics.setColor(1, 0.5, 0.5)
+    end
+    boldPrintf(string.format("バランステスト結果 (1000回): 3年到達率 %.1f%%", survivalRate), 0, h - 145, w, "center")
+
+    -- グラフ共通設定
+    local graphY = h - 120
+    local graphH = 50
+    local graphMargin = 20
+
+    -- === 左側: 到達月分布の棒グラフ ===
+    local monthGraphX = 80
+    local monthGraphW = (w - 160) / 2 - graphMargin / 2
+    local barCount = WIN_MONTHS
+    local barWidth = monthGraphW / barCount
+
+    -- タイトル
+    love.graphics.setFont(tinyFont)
+    love.graphics.setColor(0.6, 0.6, 0.7)
+    boldPrintf("到達月分布", monthGraphX, graphY - 18, monthGraphW, "center")
+
+    -- 最大値を取得
+    local maxMonthCount = 0
+    for _, count in pairs(results.monthDistribution) do
+      maxMonthCount = math.max(maxMonthCount, count)
+    end
+
+    if maxMonthCount > 0 then
+      -- 棒グラフ描画
+      for month = 1, barCount do
+        local count = results.monthDistribution[month] or 0
+        local barHeight = (count / maxMonthCount) * graphH
+        local x = monthGraphX + (month - 1) * barWidth
+        local y = graphY + graphH - barHeight
+
+        -- 色分け（早期破産=赤、中盤=黄、クリア=緑）
+        if month <= 12 then
+          love.graphics.setColor(1, 0.3, 0.3, 0.8)
+        elseif month < WIN_MONTHS then
+          love.graphics.setColor(1, 1, 0.3, 0.8)
+        else
+          love.graphics.setColor(0.3, 1, 0.5, 0.8)
+        end
+
+        love.graphics.rectangle("fill", x, y, barWidth - 1, barHeight)
+      end
+
+      -- 軸ラベル
+      love.graphics.setFont(tinyFont)
+      love.graphics.setColor(0.5, 0.5, 0.6)
+      boldPrint("1月", monthGraphX, graphY + graphH + 2)
+      boldPrint(string.format("%d月", WIN_MONTHS), monthGraphX + monthGraphW - 30, graphY + graphH + 2)
+    end
+
+    -- === 右側: 最終収益分布の棒グラフ ===
+    local moneyGraphX = monthGraphX + monthGraphW + graphMargin
+    local moneyGraphW = monthGraphW
+    local moneyBucketCount = 10
+    local moneyBarWidth = moneyGraphW / moneyBucketCount
+
+    -- タイトル
+    love.graphics.setFont(tinyFont)
+    love.graphics.setColor(0.6, 0.6, 0.7)
+    boldPrintf("最終収益分布", moneyGraphX, graphY - 18, moneyGraphW, "center")
+
+    -- 最大値を取得（既存のバケットデータを使用）
+    local maxMoneyCount = 0
+    for _, count in pairs(results.moneyDistribution) do
+      maxMoneyCount = math.max(maxMoneyCount, count)
+    end
+
+    if maxMoneyCount > 0 then
+      -- 棒グラフ描画（バケット1-10を0-9のインデックスで描画）
+      for i = 1, moneyBucketCount do
+        local count = results.moneyDistribution[i] or 0
+        local barHeight = (count / maxMoneyCount) * graphH
+        local x = moneyGraphX + (i - 1) * moneyBarWidth
+        local y = graphY + graphH - barHeight
+
+        -- 色分け（低収益=赤、中収益=黄、高収益=緑）
+        if i <= 3 then
+          love.graphics.setColor(1, 0.3, 0.3, 0.8)
+        elseif i <= 6 then
+          love.graphics.setColor(1, 1, 0.3, 0.8)
+        else
+          love.graphics.setColor(0.3, 1, 0.5, 0.8)
+        end
+
+        love.graphics.rectangle("fill", x, y, moneyBarWidth - 1, barHeight)
+      end
+
+      -- 軸ラベル
+      love.graphics.setFont(tinyFont)
+      love.graphics.setColor(0.5, 0.5, 0.6)
+      boldPrint("0", moneyGraphX, graphY + graphH + 2)
+      boldPrint(string.format("%d万", moneyBucketCount * 100), moneyGraphX + moneyGraphW - 35, graphY + graphH + 2)
+    end
+  end
 end
 
 -- ============================================================
